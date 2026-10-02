@@ -45,6 +45,18 @@ cd app && flutter run -d windows                  # Windows
 cd app && flutter run -d <android> --dart-define=SERVER_URL=ws://10.0.2.2:8080
 ```
 
+## Production
+
+| Élément | Où | Comment |
+| --- | --- | --- |
+| Relais | Render (Web Service, offre Free) : `https://dismessage.onrender.com` | `Dockerfile` à la racine, déploiement automatique à chaque push sur `main`. Health check : `/health` |
+| Client web | GitHub Pages | `.github/workflows/pages.yml` (tests + `flutter build web --base-href /<dépôt>/`) |
+| APK / EXE | `dist/` (local) | `flutter build apk --release` / `flutter build windows --release` |
+
+- **Serveur par défaut :** `kProductionServer` dans `app/lib/config.dart`, utilisé par les versions release et par le web sur `*.github.io` (`chooseServerUri`, testé dans `config_test.dart`). Les versions debug visent un relais local.
+- **Limites de Render Free :** mise en veille après environ 15 min d'inactivité (premier réveil de 30 à 60 s), et pas de disque persistant. `ids.json` est perdu au redémarrage, et chaque client réenregistre son ID avec son secret.
+- **Android :** le NDK est fixé à `29.0.13113456` (déjà installé). Ne pas revenir à `flutter.ndkVersion`, qui déclencherait un téléchargement.
+
 ## Accès depuis internet (tunnel VS Code)
 
 Le serveur sert à la fois le relais (`/ws`) et le client web (`app/build/web`, variable `DISMESSAGE_WEB`). Un seul lien public suffit donc.

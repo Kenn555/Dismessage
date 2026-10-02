@@ -13,9 +13,7 @@ Future<void> main() async {
   if (Directory(webRoot).existsSync()) {
     stdout.writeln('Client web     : http://localhost:${server.port}/');
   } else {
-    stdout.writeln(
-      'Client web absent ($webRoot) : lancer `flutter build web` dans app/',
-    );
+    stdout.writeln('Client web non servi par ce serveur ($webRoot).');
   }
 }
 
