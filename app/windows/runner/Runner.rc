@@ -89,13 +89,13 @@ BEGIN
     BEGIN
         BLOCK "040904e4"
         BEGIN
-            VALUE "CompanyName", "com.dismessage" "\0"
-            VALUE "FileDescription", "dismessage" "\0"
+            VALUE "CompanyName", "Dismessage" "\0"
+            VALUE "FileDescription", "Dismessage - messagerie en direct" "\0"
             VALUE "FileVersion", VERSION_AS_STRING "\0"
-            VALUE "InternalName", "dismessage" "\0"
-            VALUE "LegalCopyright", "Copyright (C) 2026 com.dismessage. All rights reserved." "\0"
+            VALUE "InternalName", "Dismessage" "\0"
+            VALUE "LegalCopyright", "Copyright (C) 2026 Dismessage" "\0"
             VALUE "OriginalFilename", "dismessage.exe" "\0"
-            VALUE "ProductName", "dismessage" "\0"
+            VALUE "ProductName", "Dismessage" "\0"
             VALUE "ProductVersion", VERSION_AS_STRING "\0"
         END
     END

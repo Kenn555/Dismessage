@@ -47,6 +47,14 @@ cd app && flutter run -d windows                  # Windows
 cd app && flutter run -d <android> --dart-define=SERVER_URL=ws://10.0.2.2:8080
 ```
 
+## Identité visuelle
+
+- **Logo :** bulle de dialogue blanche avec les trois points de saisie (le dernier plus pâle) sur un carré arrondi en dégradé `#5B5BD6` → `#8B5CF6`. **Source unique :** `app/lib/branding/logo_geometry.dart` (Dart pur).
+- **Icônes :** `cd app && dart run tool/generate_icons.dart` régénère tout à partir de cette géométrie, à relancer après toute modification du logo. Sont produits : `web/favicon.png`, `web/icons/*` (dont `logo.svg` et les versions maskable), les mipmaps Android (legacy, adaptive avec foreground/background, monochrome pour Android 13), `windows/runner/resources/app_icon.ico` (16 à 256 px) et `assets/branding/` (logo 1024 px et SVG).
+- **Dans l'application :** le widget `DismessageLogo` dessine le logo (pas d'image). `AppTheme` (`app/lib/theme/app_theme.dart`) centralise les couleurs, le dégradé de marque, la typographie et le style des composants. Ne pas recréer de `ThemeData` ailleurs.
+- **Styles de texte des boutons :** ne jamais y mettre de `color`, qui écraserait la couleur du bouton.
+- **Avatars :** `ContactAvatar` attribue une couleur stable dérivée de l'ID.
+
 ## Production
 
 | Élément | Où | Comment |

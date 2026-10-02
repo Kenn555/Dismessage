@@ -7,7 +7,10 @@ import 'package:flutter/services.dart';
 import '../../config.dart';
 import '../../services/connection_service.dart';
 import '../../services/contacts_service.dart';
+import '../../theme/app_theme.dart';
+import '../../widgets/contact_avatar.dart';
 import '../../widgets/contact_dialog.dart';
+import '../../widgets/dismessage_logo.dart';
 import '../chat/chat_screen.dart';
 
 class HomeScreen extends StatefulWidget {
@@ -203,174 +206,300 @@ class _HomeScreenState extends State<HomeScreen> {
     await _connection.setServerUri(uri);
   }
 
+  void _copyId(String formatted) {
+    Clipboard.setData(ClipboardData(text: formatted));
+    _snack('ID copié');
+  }
+
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Dismessage'),
+        titleSpacing: 20,
+        title: const Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            DismessageLogo(size: 30),
+            SizedBox(width: 12),
+            Text(
+              'Dismessage',
+              style: TextStyle(
+                fontSize: 21,
+                fontWeight: FontWeight.w800,
+                letterSpacing: -0.4,
+              ),
+            ),
+          ],
+        ),
         actions: [
           ListenableBuilder(
             listenable: _connection,
             builder: (context, _) => _StatusChip(status: _connection.status),
           ),
+          const SizedBox(width: 4),
           IconButton(
             key: const Key('server-settings'),
             tooltip: 'Serveur',
-            icon: const Icon(Icons.dns_outlined),
+            icon: const Icon(Icons.tune_rounded),
             onPressed: _editServer,
           ),
           const SizedBox(width: 8),
         ],
       ),
-      body: Center(
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.all(24),
-          child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 440),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                ListenableBuilder(
-                  listenable: _connection,
-                  builder: (context, _) =>
-                      _ConnectionBanner(connection: _connection),
-                ),
-                Card(
-                  child: Padding(
-                    padding: const EdgeInsets.all(20),
-                    child: ListenableBuilder(
-                      listenable: _connection,
-                      builder: (context, _) {
-                        final id = _connection.myId;
-                        final formatted = id == null
-                            ? '— — —'
-                            : DismessageId.format(id);
-                        return Column(
-                          children: [
-                            Text(
-                              'Votre ID',
-                              style: theme.textTheme.titleMedium,
-                            ),
-                            const SizedBox(height: 8),
-                            SelectableText(
-                              formatted,
-                              key: const Key('my-id'),
-                              style: theme.textTheme.displaySmall?.copyWith(
-                                fontFeatures: const [
-                                  FontFeature.tabularFigures(),
-                                ],
-                                letterSpacing: 2,
-                              ),
-                            ),
-                            const SizedBox(height: 12),
-                            Wrap(
-                              spacing: 8,
-                              alignment: WrapAlignment.center,
-                              children: [
-                                OutlinedButton.icon(
-                                  icon: const Icon(Icons.copy),
-                                  label: const Text('Copier'),
-                                  onPressed: id == null
-                                      ? null
-                                      : () {
-                                          Clipboard.setData(
-                                            ClipboardData(text: formatted),
-                                          );
-                                          _snack('ID copié');
-                                        },
-                                ),
-                                TextButton.icon(
-                                  key: const Key('regenerate-id'),
-                                  icon: const Icon(Icons.autorenew),
-                                  label: const Text('Générer un nouvel ID'),
-                                  onPressed: _regenerate,
-                                ),
-                              ],
-                            ),
-                          ],
-                        );
-                      },
+      body: SafeArea(
+        child: Center(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.fromLTRB(20, 8, 20, 32),
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 480),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  ListenableBuilder(
+                    listenable: _connection,
+                    builder: (context, _) =>
+                        _ConnectionBanner(connection: _connection),
+                  ),
+                  ListenableBuilder(
+                    listenable: _connection,
+                    builder: (context, _) => _IdCard(
+                      id: _connection.myId,
+                      onCopy: _copyId,
+                      onRegenerate: _regenerate,
                     ),
                   ),
-                ),
-                const SizedBox(height: 32),
-                Text("Joindre quelqu'un", style: theme.textTheme.titleMedium),
-                const SizedBox(height: 8),
-                TextField(
-                  key: const Key('peer-id'),
-                  controller: _peerController,
-                  keyboardType: TextInputType.number,
-                  inputFormatters: [
-                    FilteringTextInputFormatter.allow(RegExp(r'[0-9 \-]')),
-                  ],
-                  decoration: InputDecoration(
-                    labelText: "ID de l'interlocuteur",
-                    hintText: '123 456 789',
-                    errorText: _peerError,
-                    border: const OutlineInputBorder(),
+                  const SizedBox(height: 32),
+                  const _SectionTitle(
+                    title: 'Nouvelle conversation',
+                    subtitle: "Entrez l'ID de la personne à joindre.",
                   ),
-                  onSubmitted: (_) => _connect(),
-                ),
-                const SizedBox(height: 12),
-                ListenableBuilder(
-                  listenable: _connection,
-                  builder: (context, _) {
-                    final pending = _connection.pendingRequest;
-                    return AnimatedSwitcher(
-                      duration: const Duration(milliseconds: 200),
-                      child: pending != null
-                          ? _PendingRequestCard(
-                              key: ValueKey(pending),
-                              peerLabel: _label(pending),
-                              onCancel: _connection.cancelRequest,
-                            )
-                          : FilledButton.icon(
-                              key: const Key('connect'),
-                              icon: const Icon(Icons.chat_bubble_outline),
-                              label: const Text('Se connecter'),
-                              onPressed:
-                                  _connection.status == ServerStatus.online
-                                  ? _connect
-                                  : null,
+                  const SizedBox(height: 12),
+                  Card(
+                    child: Padding(
+                      padding: const EdgeInsets.all(16),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          TextField(
+                            key: const Key('peer-id'),
+                            controller: _peerController,
+                            keyboardType: TextInputType.number,
+                            inputFormatters: [
+                              FilteringTextInputFormatter.allow(
+                                RegExp(r'[0-9 \-]'),
+                              ),
+                            ],
+                            style: const TextStyle(
+                              fontFeatures: [FontFeature.tabularFigures()],
+                              letterSpacing: 1,
                             ),
-                    );
-                  },
-                ),
-                const SizedBox(height: 32),
-                Row(
-                  children: [
-                    Expanded(
-                      child: Text(
-                        'Contacts',
-                        style: theme.textTheme.titleMedium,
+                            decoration: InputDecoration(
+                              labelText: "ID de l'interlocuteur",
+                              hintText: '123 456 789',
+                              prefixIcon: const Icon(Icons.tag_rounded),
+                              errorText: _peerError,
+                            ),
+                            onSubmitted: (_) => _connect(),
+                          ),
+                          const SizedBox(height: 12),
+                          ListenableBuilder(
+                            listenable: _connection,
+                            builder: (context, _) {
+                              final pending = _connection.pendingRequest;
+                              return AnimatedSwitcher(
+                                duration: const Duration(milliseconds: 200),
+                                // Full width (the default centers the child).
+                                layoutBuilder: (current, previous) => Stack(
+                                  children: [
+                                    ...previous,
+                                    if (current != null)
+                                      SizedBox(
+                                        width: double.infinity,
+                                        child: current,
+                                      ),
+                                  ],
+                                ),
+                                child: pending != null
+                                    ? _PendingRequestCard(
+                                        key: ValueKey(pending),
+                                        peerLabel: _label(pending),
+                                        onCancel: _connection.cancelRequest,
+                                      )
+                                    : FilledButton.icon(
+                                        key: const Key('connect'),
+                                        icon: const Icon(
+                                          Icons.arrow_forward_rounded,
+                                        ),
+                                        label: const Text('Se connecter'),
+                                        onPressed:
+                                            _connection.status ==
+                                                ServerStatus.online
+                                            ? _connect
+                                            : null,
+                                      ),
+                              );
+                            },
+                          ),
+                        ],
                       ),
                     ),
-                    TextButton.icon(
-                      key: const Key('add-contact'),
-                      icon: const Icon(Icons.person_add_alt),
-                      label: const Text('Ajouter'),
-                      onPressed: _addContact,
-                    ),
-                  ],
-                ),
-                ListenableBuilder(
-                  listenable: Listenable.merge([_contacts, _connection]),
-                  builder: (context, _) => _ContactList(
-                    contacts: _contacts.contacts,
-                    canConnect:
-                        _connection.status == ServerStatus.online &&
-                        _connection.pendingRequest == null,
-                    onConnect: (c) => _connection.requestChat(c.id),
-                    onRename: _renameContact,
-                    onRemove: _removeContact,
                   ),
-                ),
-              ],
+                  const SizedBox(height: 32),
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.end,
+                    children: [
+                      const Expanded(
+                        child: _SectionTitle(
+                          title: 'Contacts',
+                          subtitle: 'Sur cet appareil uniquement.',
+                        ),
+                      ),
+                      TextButton.icon(
+                        key: const Key('add-contact'),
+                        icon: const Icon(Icons.person_add_alt_1_rounded),
+                        label: const Text('Ajouter'),
+                        onPressed: _addContact,
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  ListenableBuilder(
+                    listenable: Listenable.merge([_contacts, _connection]),
+                    builder: (context, _) => _ContactList(
+                      contacts: _contacts.contacts,
+                      canConnect:
+                          _connection.status == ServerStatus.online &&
+                          _connection.pendingRequest == null,
+                      onConnect: (c) => _connection.requestChat(c.id),
+                      onRename: _renameContact,
+                      onRemove: _removeContact,
+                    ),
+                  ),
+                ],
+              ),
             ),
           ),
         ),
       ),
+    );
+  }
+}
+
+/// Hero card: my ID, on the brand gradient.
+class _IdCard extends StatelessWidget {
+  const _IdCard({
+    required this.id,
+    required this.onCopy,
+    required this.onRegenerate,
+  });
+
+  final String? id;
+  final void Function(String formatted) onCopy;
+  final VoidCallback onRegenerate;
+
+  @override
+  Widget build(BuildContext context) {
+    final text = Theme.of(context).textTheme;
+    final id = this.id;
+    final formatted = id == null ? '— — —' : DismessageId.format(id);
+    const onBrand = Colors.white;
+    final muted = Colors.white.withValues(alpha: 0.78);
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        gradient: AppTheme.brandGradient,
+        borderRadius: BorderRadius.circular(24),
+        boxShadow: [
+          BoxShadow(
+            color: AppTheme.brand.withValues(alpha: 0.25),
+            blurRadius: 24,
+            spreadRadius: -4,
+            offset: const Offset(0, 8),
+          ),
+        ],
+      ),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(24, 22, 24, 18),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'VOTRE ID',
+              style: text.labelMedium?.copyWith(
+                color: muted,
+                letterSpacing: 1.6,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+            const SizedBox(height: 6),
+            SelectableText(
+              formatted,
+              key: const Key('my-id'),
+              style: text.displaySmall?.copyWith(
+                color: onBrand,
+                fontFeatures: const [FontFeature.tabularFigures()],
+                letterSpacing: 2,
+              ),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              'Partagez-le pour que l’on puisse vous joindre.',
+              style: text.bodyMedium?.copyWith(color: muted),
+            ),
+            const SizedBox(height: 18),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                FilledButton.icon(
+                  style: FilledButton.styleFrom(
+                    backgroundColor: onBrand,
+                    foregroundColor: AppTheme.brand,
+                    minimumSize: const Size(0, 42),
+                  ),
+                  icon: const Icon(Icons.copy_rounded, size: 18),
+                  label: const Text('Copier'),
+                  onPressed: id == null ? null : () => onCopy(formatted),
+                ),
+                TextButton.icon(
+                  key: const Key('regenerate-id'),
+                  style: TextButton.styleFrom(
+                    foregroundColor: onBrand,
+                    minimumSize: const Size(0, 42),
+                  ),
+                  icon: const Icon(Icons.autorenew_rounded, size: 18),
+                  label: const Text('Générer un nouvel ID'),
+                  onPressed: onRegenerate,
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _SectionTitle extends StatelessWidget {
+  const _SectionTitle({required this.title, required this.subtitle});
+
+  final String title;
+  final String subtitle;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(title, style: theme.textTheme.titleLarge),
+        const SizedBox(height: 2),
+        Text(
+          subtitle,
+          style: theme.textTheme.bodyMedium?.copyWith(
+            color: theme.colorScheme.onSurfaceVariant,
+          ),
+        ),
+      ],
     );
   }
 }
@@ -394,14 +523,30 @@ class _ContactList extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
     if (contacts.isEmpty) {
-      return Padding(
-        padding: const EdgeInsets.symmetric(vertical: 12),
-        child: Text(
-          'Aucun contact. Enregistrez quelqu’un pour le retrouver ici '
-          'sans retaper son ID.',
-          style: theme.textTheme.bodyMedium?.copyWith(
-            color: theme.colorScheme.onSurfaceVariant,
+      return Card(
+        child: Padding(
+          padding: const EdgeInsets.all(20),
+          child: Row(
+            children: [
+              CircleAvatar(
+                radius: 22,
+                backgroundColor: scheme.primaryContainer,
+                foregroundColor: scheme.onPrimaryContainer,
+                child: const Icon(Icons.people_alt_outlined),
+              ),
+              const SizedBox(width: 16),
+              Expanded(
+                child: Text(
+                  'Aucun contact. Enregistrez quelqu’un pour le retrouver '
+                  'ici sans retaper son ID.',
+                  style: theme.textTheme.bodyMedium?.copyWith(
+                    color: scheme.onSurfaceVariant,
+                  ),
+                ),
+              ),
+            ],
           ),
         ),
       );
@@ -410,19 +555,25 @@ class _ContactList extends StatelessWidget {
       clipBehavior: Clip.antiAlias,
       child: Column(
         children: [
-          for (final contact in contacts)
+          for (final (index, contact) in contacts.indexed) ...[
+            if (index > 0) const Divider(indent: 72),
             ListTile(
               key: ValueKey('contact-${contact.id}'),
-              leading: CircleAvatar(
-                child: Text(contact.name.characters.first.toUpperCase()),
+              contentPadding: const EdgeInsets.fromLTRB(16, 4, 4, 4),
+              leading: ContactAvatar(id: contact.id, name: contact.name),
+              title: Text(contact.name, style: theme.textTheme.titleMedium),
+              subtitle: Text(
+                DismessageId.format(contact.id),
+                style: const TextStyle(
+                  fontFeatures: [FontFeature.tabularFigures()],
+                ),
               ),
-              title: Text(contact.name),
-              subtitle: Text(DismessageId.format(contact.id)),
               enabled: canConnect,
               onTap: () => onConnect(contact),
               trailing: PopupMenuButton<String>(
                 key: ValueKey('contact-menu-${contact.id}'),
                 tooltip: 'Options',
+                icon: const Icon(Icons.more_vert_rounded),
                 onSelected: (action) =>
                     action == 'rename' ? onRename(contact) : onRemove(contact),
                 itemBuilder: (_) => const [
@@ -431,6 +582,7 @@ class _ContactList extends StatelessWidget {
                 ],
               ),
             ),
+          ],
         ],
       ),
     );
@@ -445,13 +597,41 @@ class _StatusChip extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final (label, color) = switch (status) {
-      ServerStatus.online => ('En ligne', Colors.green),
-      ServerStatus.connecting => ('Connexion…', Colors.orange),
-      ServerStatus.offline => ('Hors ligne', Colors.red),
+      ServerStatus.online => ('En ligne', const Color(0xFF10B981)),
+      ServerStatus.connecting => ('Connexion…', const Color(0xFFF59E0B)),
+      ServerStatus.offline => ('Hors ligne', const Color(0xFFEF4444)),
     };
-    return Chip(
-      avatar: Icon(Icons.circle, size: 12, color: color),
-      label: Text(label),
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 250),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      // Neutral pill: tinted backgrounds clash with the brand surface.
+      decoration: BoxDecoration(
+        color: Theme.of(context).colorScheme.surfaceContainerHigh,
+        borderRadius: BorderRadius.circular(20),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            width: 8,
+            height: 8,
+            decoration: BoxDecoration(
+              color: color,
+              shape: BoxShape.circle,
+              boxShadow: [
+                BoxShadow(color: color.withValues(alpha: 0.5), blurRadius: 6),
+              ],
+            ),
+          ),
+          const SizedBox(width: 8),
+          Text(
+            label,
+            style: Theme.of(
+              context,
+            ).textTheme.labelMedium?.copyWith(fontWeight: FontWeight.w700),
+          ),
+        ],
+      ),
     );
   }
 }

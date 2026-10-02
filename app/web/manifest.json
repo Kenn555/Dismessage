@@ -3,10 +3,10 @@
     "short_name": "Dismessage",
     "start_url": ".",
     "display": "standalone",
-    "background_color": "#0175C2",
-    "theme_color": "#0175C2",
+    "background_color": "#5B5BD6",
+    "theme_color": "#5B5BD6",
     "description": "Messagerie où l'on voit l'interlocuteur écrire en direct.",
-    "orientation": "portrait-primary",
+    "orientation": "any",
     "prefer_related_applications": false,
     "icons": [
         {

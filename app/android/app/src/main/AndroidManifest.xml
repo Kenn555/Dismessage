@@ -2,7 +2,7 @@
     <!-- Required to reach the relay server in release builds. -->
     <uses-permission android:name="android.permission.INTERNET"/>
     <application
-        android:label="dismessage"
+        android:label="Dismessage"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
         <activity

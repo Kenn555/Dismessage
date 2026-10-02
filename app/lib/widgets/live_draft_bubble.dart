@@ -190,9 +190,17 @@ class _LiveDraftBubbleState extends State<LiveDraftBubble>
         padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
         constraints: const BoxConstraints(maxWidth: 520),
         decoration: BoxDecoration(
-          color: scheme.surfaceContainerHighest.withValues(alpha: 0.6),
-          borderRadius: BorderRadius.circular(18),
-          border: Border.all(color: scheme.outlineVariant),
+          // Same shape as received bubbles, lighter: not sent yet.
+          color: scheme.surfaceContainerHigh.withValues(alpha: 0.5),
+          borderRadius: const BorderRadius.only(
+            topLeft: Radius.circular(20),
+            topRight: Radius.circular(20),
+            bottomLeft: Radius.circular(6),
+            bottomRight: Radius.circular(20),
+          ),
+          border: Border.all(
+            color: scheme.outlineVariant.withValues(alpha: 0.7),
+          ),
         ),
         child: Text.rich(
           key: const Key('live-draft-text'),
@@ -203,7 +211,10 @@ class _LiveDraftBubbleState extends State<LiveDraftBubble>
               if (_paused)
                 WidgetSpan(
                   alignment: PlaceholderAlignment.middle,
-                  child: TypingDots(color: style.color),
+                  child: Padding(
+                    padding: const EdgeInsets.only(left: 3),
+                    child: TypingDots(color: style.color),
+                  ),
                 ),
             ],
           ),

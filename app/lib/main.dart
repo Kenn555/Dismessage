@@ -6,6 +6,7 @@ import 'features/home/home_screen.dart';
 import 'services/connection_service.dart';
 import 'services/contacts_service.dart';
 import 'services/identity_service.dart';
+import 'theme/app_theme.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -40,16 +41,11 @@ class DismessageApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    const seed = Color(0xFF5B5BD6);
     return MaterialApp(
       title: 'Dismessage',
       debugShowCheckedModeBanner: false,
-      theme: ThemeData(colorSchemeSeed: seed, useMaterial3: true),
-      darkTheme: ThemeData(
-        colorSchemeSeed: seed,
-        brightness: Brightness.dark,
-        useMaterial3: true,
-      ),
+      theme: AppTheme.light(),
+      darkTheme: AppTheme.dark(),
       home: HomeScreen(
         connection: connection,
         settings: settings,

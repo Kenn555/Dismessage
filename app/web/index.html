@@ -30,6 +30,8 @@
   <link rel="icon" type="image/png" href="favicon.png"/>
 
   <title>Dismessage</title>
+  <meta name="theme-color" content="#5B5BD6">
+  <link rel="icon" type="image/svg+xml" href="icons/logo.svg">
   <link rel="manifest" href="manifest.json">
   <style>
     :root { --bg: #f7f7fb; --fg: #1b1b23; --muted: #6b6b7b; --accent: #5b5bd6; }
@@ -42,7 +44,14 @@
       align-items: center; justify-content: center; gap: 12px;
       font-family: system-ui, sans-serif; color: var(--fg);
     }
-    #loading h1 { margin: 0; font-size: 28px; font-weight: 600; }
+    #loading img {
+      width: 88px; height: 88px; margin-bottom: 8px;
+      filter: drop-shadow(0 12px 24px rgba(91, 91, 214, .35));
+      animation: float 2.4s infinite ease-in-out;
+    }
+    @keyframes float { 0%, 100% { transform: translateY(0); }
+                       50% { transform: translateY(-6px); } }
+    #loading h1 { margin: 0; font-size: 28px; font-weight: 700; letter-spacing: -.02em; }
     #loading p { margin: 0; color: var(--muted); font-size: 15px; }
     #loading .dots span {
       display: inline-block; width: 8px; height: 8px; margin: 0 3px;
@@ -57,6 +66,7 @@
 </head>
 <body>
   <div id="loading">
+    <img src="icons/logo.svg" alt="">
     <h1>Dismessage</h1>
     <div class="dots"><span></span><span></span><span></span></div>
     <p>Chargement… le premier lancement peut prendre une minute.</p>
