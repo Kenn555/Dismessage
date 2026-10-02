@@ -6,7 +6,8 @@ void main() {
     final cases = {
       'https://abc-8080.euw.devtunnels.ms':
           'wss://abc-8080.euw.devtunnels.ms/ws',
-      'https://abc-8080.euw.devtunnels.ms/': 'wss://abc-8080.euw.devtunnels.ms/ws',
+      'https://abc-8080.euw.devtunnels.ms/':
+          'wss://abc-8080.euw.devtunnels.ms/ws',
       ' https://abc-8080.euw.devtunnels.ms/ws ':
           'wss://abc-8080.euw.devtunnels.ms/ws',
       'wss://example.com/ws': 'wss://example.com/ws',
@@ -34,15 +35,17 @@ void main() {
     test('https page uses wss on the same host', () {
       expect(
         ServerAddress.sameOrigin(
-                Uri.parse('https://abc-8080.euw.devtunnels.ms/#/'))
-            .toString(),
+          Uri.parse('https://abc-8080.euw.devtunnels.ms/#/'),
+        ).toString(),
         'wss://abc-8080.euw.devtunnels.ms/ws',
       );
     });
 
     test('http page keeps its port', () {
       expect(
-        ServerAddress.sameOrigin(Uri.parse('http://localhost:8080/')).toString(),
+        ServerAddress.sameOrigin(
+          Uri.parse('http://localhost:8080/'),
+        ).toString(),
         'ws://localhost:8080/ws',
       );
     });

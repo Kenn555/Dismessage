@@ -28,8 +28,11 @@ class DraftSender {
     if (_pending.isNotEmpty && op.del == 0) {
       final last = _pending.last;
       if (op.pos == last.pos + last.ins.length) {
-        _pending[_pending.length - 1] =
-            EditOp(pos: last.pos, del: last.del, ins: last.ins + op.ins);
+        _pending[_pending.length - 1] = EditOp(
+          pos: last.pos,
+          del: last.del,
+          ins: last.ins + op.ins,
+        );
         return;
       }
     }

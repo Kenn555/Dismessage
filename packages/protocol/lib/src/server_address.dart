@@ -39,13 +39,15 @@ abstract final class ServerAddress {
 
   /// WebSocket URL of a relay that also served the current web page.
   static Uri sameOrigin(Uri page) => Uri(
-        scheme: page.scheme == 'https' ? 'wss' : 'ws',
-        host: page.host,
-        port: page.hasPort ? page.port : null,
-        path: path,
-      );
+    scheme: page.scheme == 'https' ? 'wss' : 'ws',
+    host: page.host,
+    port: page.hasPort ? page.port : null,
+    path: path,
+  );
 
   static bool _isLocal(String host) =>
       host == 'localhost' ||
-      RegExp(r'^(127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)').hasMatch(host);
+      RegExp(
+        r'^(127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)',
+      ).hasMatch(host);
 }

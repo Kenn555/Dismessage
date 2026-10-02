@@ -24,3 +24,21 @@ const int kMaxTextLength = 10000;
 
 /// Maximum length of an ID secret.
 const int kMaxSecretLength = 128;
+
+/// Longest side of a sent image, in pixels.
+const int kMaxImageSide = 1280;
+
+/// Maximum size of an encoded (JPEG) image, in bytes.
+const int kMaxImageBytes = 600 * 1024;
+
+/// Longest side of the blurred preview sent before opening.
+const int kImagePreviewSide = 32;
+
+/// Maximum base64 length of an image preview.
+const int kMaxImagePreviewLength = 8 * 1024;
+
+/// Maximum base64 length of a full image.
+const int kMaxImageDataLength = (kMaxImageBytes + 2) ~/ 3 * 4;
+
+/// Maximum size of one raw WebSocket message (an image plus JSON overhead).
+const int kMaxFrameLength = kMaxImageDataLength + 4096;

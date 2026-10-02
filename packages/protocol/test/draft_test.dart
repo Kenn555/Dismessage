@@ -3,23 +3,31 @@ import 'package:test/test.dart';
 
 /// Feeds a sender frame into a receiver, like the relay would.
 DraftUpdate deliver(DraftState state, RelayedFrame frame) => switch (frame) {
-      DraftOpsFrame f => state.applyOps(f.seq, f.ops),
-      DraftSnapshotFrame f => state.applySnapshot(f.seq, f.text),
-      DraftClearFrame f => state.clear(f.seq),
-      MessageCommitFrame f => state.commit(f.seq, f.text) != null
-          ? DraftUpdate.applied
-          : DraftUpdate.ignored,
-      DraftResyncFrame() => DraftUpdate.ignored,
-    };
+  DraftOpsFrame f => state.applyOps(f.seq, f.ops),
+  DraftSnapshotFrame f => state.applySnapshot(f.seq, f.text),
+  DraftClearFrame f => state.clear(f.seq),
+  MessageCommitFrame f =>
+    state.commit(f.seq, f.text) != null
+        ? DraftUpdate.applied
+        : DraftUpdate.ignored,
+  DraftResyncFrame() ||
+  ImageOfferFrame() ||
+  ImageRequestFrame() ||
+  ImageDataFrame() => DraftUpdate.ignored,
+};
 
 void main() {
   group('DraftState', () {
     test('applies ops in order', () {
       final s = DraftState();
-      expect(s.applyOps(1, [const EditOp(pos: 0, del: 0, ins: 'Bon')]),
-          DraftUpdate.applied);
-      expect(s.applyOps(2, [const EditOp(pos: 3, del: 0, ins: 'jour')]),
-          DraftUpdate.applied);
+      expect(
+        s.applyOps(1, [const EditOp(pos: 0, del: 0, ins: 'Bon')]),
+        DraftUpdate.applied,
+      );
+      expect(
+        s.applyOps(2, [const EditOp(pos: 3, del: 0, ins: 'jour')]),
+        DraftUpdate.applied,
+      );
       expect(s.text, 'Bonjour');
       expect(s.lastSeq, 2);
     });
@@ -27,31 +35,41 @@ void main() {
     test('ignores duplicates', () {
       final s = DraftState();
       s.applyOps(1, [const EditOp(pos: 0, del: 0, ins: 'a')]);
-      expect(s.applyOps(1, [const EditOp(pos: 0, del: 0, ins: 'a')]),
-          DraftUpdate.ignored);
+      expect(
+        s.applyOps(1, [const EditOp(pos: 0, del: 0, ins: 'a')]),
+        DraftUpdate.ignored,
+      );
       expect(s.text, 'a');
     });
 
     test('gap triggers resync and blocks ops until snapshot', () {
       final s = DraftState();
       s.applyOps(1, [const EditOp(pos: 0, del: 0, ins: 'a')]);
-      expect(s.applyOps(3, [const EditOp(pos: 1, del: 0, ins: 'c')]),
-          DraftUpdate.needsResync);
+      expect(
+        s.applyOps(3, [const EditOp(pos: 1, del: 0, ins: 'c')]),
+        DraftUpdate.needsResync,
+      );
       expect(s.awaitingResync, isTrue);
-      expect(s.applyOps(4, [const EditOp(pos: 0, del: 0, ins: 'x')]),
-          DraftUpdate.ignored);
+      expect(
+        s.applyOps(4, [const EditOp(pos: 0, del: 0, ins: 'x')]),
+        DraftUpdate.ignored,
+      );
       expect(s.applySnapshot(5, 'abcd'), DraftUpdate.applied);
       expect(s.awaitingResync, isFalse);
       expect(s.text, 'abcd');
-      expect(s.applyOps(6, [const EditOp(pos: 4, del: 0, ins: 'e')]),
-          DraftUpdate.applied);
+      expect(
+        s.applyOps(6, [const EditOp(pos: 4, del: 0, ins: 'e')]),
+        DraftUpdate.applied,
+      );
       expect(s.text, 'abcde');
     });
 
     test('op that does not fit triggers resync', () {
       final s = DraftState();
-      expect(s.applyOps(1, [const EditOp(pos: 5, del: 0, ins: 'x')]),
-          DraftUpdate.needsResync);
+      expect(
+        s.applyOps(1, [const EditOp(pos: 5, del: 0, ins: 'x')]),
+        DraftUpdate.needsResync,
+      );
       expect(s.text, '');
     });
 

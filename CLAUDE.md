@@ -16,6 +16,8 @@ Chaque installation a un **ID à 9 chiffres** (style AnyDesk, ex. `482 913 075`)
 
 - Les messages sont **éphémères** : rien n'est stocké, ni côté serveur ni côté client.
 - Les **contacts** (`ContactsService`) sont stockés **uniquement sur l'appareil** (clé `dismessage.contacts`). Ils ne contiennent qu'un ID et un nom, jamais de message.
+- **Images :** seule une miniature déjà floutée part à l'envoi (`image_offer`). L'image nette n'est transférée (`image_data`) que quand le destinataire appuie pour l'ouvrir (`image_request`), et l'expéditeur voit alors « Ouverte ». `ImageCodec` réduit l'image à `kMaxImageSide`, la recompresse sous `kMaxImageBytes` et **supprime l'EXIF** (dont la position GPS). Les images ne vivent qu'en mémoire, comme les messages. Un client n'accepte un `image_data` que pour une image qu'il a demandée.
+- **Émojis :** panneau intégré (`EmojiPanel`), sans paquet externe. L'émoji est inséré au curseur puis diffusé en direct comme une frappe.
 - Le serveur ne persiste que `ID → sha256(secret)` dans `server/data/ids.json`, pour empêcher le vol d'un ID.
 - Transport : JSON sur WebSocket (`ws://` en dev, `wss://` en prod). Le chiffrement de bout en bout est prévu plus tard.
 
@@ -95,6 +97,9 @@ Enveloppe : `{"t": "<type>", ...champs}`. Les trames de session portent `sid`.
 | `draft_resync` | C→S→C | `sid` |
 | `draft_clear` | C→S→C | `sid`, `seq` |
 | `message_commit` | C→S→C | `sid`, `seq`, `text` |
+| `image_offer` | C→S→C | `sid`, `img`, `w`, `h`, `preview` (JPEG base64, déjà flouté, ≤ `kMaxImagePreviewLength`) |
+| `image_request` | C→S→C | `sid`, `img` (le destinataire ouvre l'image ; sert aussi d'accusé « Ouverte ») |
+| `image_data` | C→S→C | `sid`, `img`, `data` (JPEG base64, ≤ `kMaxImageDataLength`) |
 | `error` | S→C | `code`, `message` |
 | `ping` / `pong` | C↔S | — |
 
@@ -125,6 +130,8 @@ Enveloppe : `{"t": "<type>", ...champs}`. Les trames de session portent `sid`.
 | `app/test/home_requests_test.dart` | Faux serveur scripté (`test/fakes.dart`) : attente, annulation, refus, expiration, boîte entrante, contacts |
 | `app/test/connection_diagnostics_test.dart` | Délais de connexion, nouvelles tentatives, bandeau d'erreur, bouton « Réessayer » |
 | `app/test/contacts_service_test.dart`, `chat_screen_test.dart` | Carnet de contacts (persistance, validation) et enregistrement depuis le chat |
+| `app/test/image_codec_test.dart` | Redimensionnement, plafond de taille, miniature, transparence, **suppression de l'EXIF**, fichier corrompu |
+| `app/test/chat_session_images_test.dart`, `chat_media_test.dart` | Flux miniature, ouverture, données et accusé ; données non sollicitées ignorées ; bulle floutée ; panneau d'émojis (insertion au curseur, diffusion en direct) |
 
 - Le test de bout en bout utilise `test()` et non `testWidgets()` : sans binding de widgets, les vraies sockets et les vrais timers fonctionnent.
 - Pour simuler plusieurs clients dans un même process, on injecte `MemoryStore` dans `IdentityService` (`SharedPreferences` est un singleton).

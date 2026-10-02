@@ -33,23 +33,31 @@ void main() {
     });
 
     test('append', () {
-      expect(TextDiff.compute('Bonj', 'Bonjour'),
-          const EditOp(pos: 4, del: 0, ins: 'our'));
+      expect(
+        TextDiff.compute('Bonj', 'Bonjour'),
+        const EditOp(pos: 4, del: 0, ins: 'our'),
+      );
     });
 
     test('backspace', () {
-      expect(TextDiff.compute('Bonjour', 'Bonjou'),
-          const EditOp(pos: 6, del: 1, ins: ''));
+      expect(
+        TextDiff.compute('Bonjour', 'Bonjou'),
+        const EditOp(pos: 6, del: 1, ins: ''),
+      );
     });
 
     test('replace in the middle', () {
-      expect(TextDiff.compute('le chat noir', 'le chien noir'),
-          const EditOp(pos: 5, del: 2, ins: 'ien'));
+      expect(
+        TextDiff.compute('le chat noir', 'le chien noir'),
+        const EditOp(pos: 5, del: 2, ins: 'ien'),
+      );
     });
 
     test('paste over everything', () {
-      expect(TextDiff.compute('abc', 'xyz'),
-          const EditOp(pos: 0, del: 3, ins: 'xyz'));
+      expect(
+        TextDiff.compute('abc', 'xyz'),
+        const EditOp(pos: 0, del: 3, ins: 'xyz'),
+      );
     });
 
     test('insertion of repeated char is minimal', () {
@@ -91,10 +99,14 @@ void main() {
 
   group('TextDiff.apply', () {
     test('rejects out of range ops', () {
-      expect(() => TextDiff.apply('abc', const EditOp(pos: 4, del: 0, ins: 'x')),
-          throwsRangeError);
-      expect(() => TextDiff.apply('abc', const EditOp(pos: 2, del: 2, ins: '')),
-          throwsRangeError);
+      expect(
+        () => TextDiff.apply('abc', const EditOp(pos: 4, del: 0, ins: 'x')),
+        throwsRangeError,
+      );
+      expect(
+        () => TextDiff.apply('abc', const EditOp(pos: 2, del: 2, ins: '')),
+        throwsRangeError,
+      );
     });
   });
 
@@ -102,7 +114,9 @@ void main() {
     final rng = Random(1234);
     const alphabet = ['a', 'b', ' ', 'é', '😀', '👍', '\n'];
     String randomText() => List.generate(
-        rng.nextInt(12), (_) => alphabet[rng.nextInt(alphabet.length)]).join();
+      rng.nextInt(12),
+      (_) => alphabet[rng.nextInt(alphabet.length)],
+    ).join();
     String mutate(String s) {
       final chars = s.runes.map(String.fromCharCode).toList();
       for (var i = rng.nextInt(4); i >= 0; i--) {
@@ -131,8 +145,10 @@ void main() {
   test('EditOp JSON round trip and validation', () {
     const op = EditOp(pos: 3, del: 1, ins: 'é');
     expect(EditOp.fromJson(op.toJson()), op);
-    expect(() => EditOp.fromJson({'pos': -1, 'del': 0, 'ins': ''}),
-        throwsFormatException);
+    expect(
+      () => EditOp.fromJson({'pos': -1, 'del': 0, 'ins': ''}),
+      throwsFormatException,
+    );
     expect(() => EditOp.fromJson('x'), throwsFormatException);
   });
 }

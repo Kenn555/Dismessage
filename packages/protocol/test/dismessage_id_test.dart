@@ -24,7 +24,14 @@ void main() {
 
   group('DismessageId.isValid', () {
     test('rejects malformed IDs', () {
-      for (final bad in ['', '12345678', '1234567890', '012345678', '12a456789', '123 456 789']) {
+      for (final bad in [
+        '',
+        '12345678',
+        '1234567890',
+        '012345678',
+        '12a456789',
+        '123 456 789',
+      ]) {
         expect(DismessageId.isValid(bad), isFalse, reason: bad);
       }
     });

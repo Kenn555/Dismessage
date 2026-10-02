@@ -6,8 +6,8 @@ import 'package:web_socket_channel/web_socket_channel.dart';
 
 import 'id_store.dart';
 
-/// Maximum accepted size of a raw WebSocket message.
-const int kMaxRawFrameLength = 64 * 1024;
+/// Maximum accepted size of a raw WebSocket message (fits one image).
+const int kMaxRawFrameLength = kMaxFrameLength;
 
 class _Client {
   _Client(this.channel);

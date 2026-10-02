@@ -50,19 +50,46 @@ sealed class Frame {
         'connect_accept' => ConnectAcceptFrame(from: r.id('from')),
         'connect_reject' => ConnectRejectFrame(peer: r.id('peer')),
         'connect_cancel' => ConnectCancelFrame(peer: r.id('peer')),
-        'session_started' =>
-          SessionStartedFrame(sid: r.str('sid'), peer: r.id('peer')),
+        'session_started' => SessionStartedFrame(
+          sid: r.str('sid'),
+          peer: r.id('peer'),
+        ),
         'peer_offline' => PeerOfflineFrame(peer: r.id('peer')),
         'peer_left' => PeerLeftFrame(sid: r.str('sid')),
         'session_leave' => SessionLeaveFrame(sid: r.str('sid')),
-        'draft_ops' =>
-          DraftOpsFrame(sid: r.str('sid'), seq: r.seq(), ops: r.ops()),
-        'draft_snapshot' =>
-          DraftSnapshotFrame(sid: r.str('sid'), seq: r.seq(), text: r.text()),
+        'draft_ops' => DraftOpsFrame(
+          sid: r.str('sid'),
+          seq: r.seq(),
+          ops: r.ops(),
+        ),
+        'draft_snapshot' => DraftSnapshotFrame(
+          sid: r.str('sid'),
+          seq: r.seq(),
+          text: r.text(),
+        ),
         'draft_resync' => DraftResyncFrame(sid: r.str('sid')),
         'draft_clear' => DraftClearFrame(sid: r.str('sid'), seq: r.seq()),
-        'message_commit' =>
-          MessageCommitFrame(sid: r.str('sid'), seq: r.seq(), text: r.text()),
+        'message_commit' => MessageCommitFrame(
+          sid: r.str('sid'),
+          seq: r.seq(),
+          text: r.text(),
+        ),
+        'image_offer' => ImageOfferFrame(
+          sid: r.str('sid'),
+          img: r.imageId(),
+          width: r.dimension('w'),
+          height: r.dimension('h'),
+          preview: r.base64('preview', kMaxImagePreviewLength),
+        ),
+        'image_request' => ImageRequestFrame(
+          sid: r.str('sid'),
+          img: r.imageId(),
+        ),
+        'image_data' => ImageDataFrame(
+          sid: r.str('sid'),
+          img: r.imageId(),
+          data: r.base64('data', kMaxImageDataLength),
+        ),
         'error' => ErrorFrame(code: r.str('code'), message: r.str('message')),
         'ping' => const PingFrame(),
         'pong' => const PongFrame(),
@@ -211,19 +238,29 @@ sealed class RelayedFrame extends SessionFrame {
 }
 
 class DraftOpsFrame extends RelayedFrame {
-  const DraftOpsFrame({required super.sid, required this.seq, required this.ops});
+  const DraftOpsFrame({
+    required super.sid,
+    required this.seq,
+    required this.ops,
+  });
   final int seq;
   final List<EditOp> ops;
   @override
   String get type => 'draft_ops';
   @override
-  Map<String, Object?> fieldsToJson() =>
-      {'sid': sid, 'seq': seq, 'ops': [for (final op in ops) op.toJson()]};
+  Map<String, Object?> fieldsToJson() => {
+    'sid': sid,
+    'seq': seq,
+    'ops': [for (final op in ops) op.toJson()],
+  };
 }
 
 class DraftSnapshotFrame extends RelayedFrame {
-  const DraftSnapshotFrame(
-      {required super.sid, required this.seq, required this.text});
+  const DraftSnapshotFrame({
+    required super.sid,
+    required this.seq,
+    required this.text,
+  });
   final int seq;
   final String text;
   @override
@@ -250,14 +287,69 @@ class DraftClearFrame extends RelayedFrame {
 }
 
 class MessageCommitFrame extends RelayedFrame {
-  const MessageCommitFrame(
-      {required super.sid, required this.seq, required this.text});
+  const MessageCommitFrame({
+    required super.sid,
+    required this.seq,
+    required this.text,
+  });
   final int seq;
   final String text;
   @override
   String get type => 'message_commit';
   @override
   Map<String, Object?> fieldsToJson() => {'sid': sid, 'seq': seq, 'text': text};
+}
+
+/// Sender → receiver: an image is available. Only a tiny, already blurred
+/// [preview] (base64 JPEG) travels; the real image is sent on request.
+class ImageOfferFrame extends RelayedFrame {
+  const ImageOfferFrame({
+    required super.sid,
+    required this.img,
+    required this.width,
+    required this.height,
+    required this.preview,
+  });
+  final String img;
+  final int width;
+  final int height;
+  final String preview;
+  @override
+  String get type => 'image_offer';
+  @override
+  Map<String, Object?> fieldsToJson() => {
+    'sid': sid,
+    'img': img,
+    'w': width,
+    'h': height,
+    'preview': preview,
+  };
+}
+
+/// Receiver → sender: the user tapped to open the image (also the
+/// "opened" receipt).
+class ImageRequestFrame extends RelayedFrame {
+  const ImageRequestFrame({required super.sid, required this.img});
+  final String img;
+  @override
+  String get type => 'image_request';
+  @override
+  Map<String, Object?> fieldsToJson() => {'sid': sid, 'img': img};
+}
+
+/// Sender → receiver: the full image (base64 JPEG).
+class ImageDataFrame extends RelayedFrame {
+  const ImageDataFrame({
+    required super.sid,
+    required this.img,
+    required this.data,
+  });
+  final String img;
+  final String data;
+  @override
+  String get type => 'image_data';
+  @override
+  Map<String, Object?> fieldsToJson() => {'sid': sid, 'img': img, 'data': data};
 }
 
 class ErrorFrame extends Frame {
@@ -326,6 +418,36 @@ class _Reader {
     final value = json['text'];
     if (value is! String || value.length > kMaxTextLength) {
       throw const FrameFormatException('"text" invalid or too long');
+    }
+    return value;
+  }
+
+  static final _imageId = RegExp(r'^[0-9a-f]{8,32}$');
+  static final _base64 = RegExp(r'^[A-Za-z0-9+/=_-]+$');
+
+  String imageId() {
+    final value = str('img');
+    if (!_imageId.hasMatch(value)) {
+      throw const FrameFormatException('"img" invalid');
+    }
+    return value;
+  }
+
+  int dimension(String key) {
+    final value = json[key];
+    if (value is! int || value < 1 || value > 10000) {
+      throw FrameFormatException('"$key" must be between 1 and 10000');
+    }
+    return value;
+  }
+
+  String base64(String key, int maxLength) {
+    final value = str(key);
+    if (value.length > maxLength) {
+      throw FrameFormatException('"$key" too large');
+    }
+    if (!_base64.hasMatch(value)) {
+      throw FrameFormatException('"$key" is not base64');
     }
     return value;
   }

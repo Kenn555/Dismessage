@@ -21,7 +21,10 @@ class EditOp {
 
   @override
   bool operator ==(Object other) =>
-      other is EditOp && other.pos == pos && other.del == del && other.ins == ins;
+      other is EditOp &&
+      other.pos == pos &&
+      other.del == del &&
+      other.ins == ins;
 
   @override
   int get hashCode => Object.hash(pos, del, ins);
@@ -38,8 +41,9 @@ abstract final class TextDiff {
   static EditOp? compute(String oldText, String newText) {
     if (oldText == newText) return null;
 
-    final maxPrefix =
-        oldText.length < newText.length ? oldText.length : newText.length;
+    final maxPrefix = oldText.length < newText.length
+        ? oldText.length
+        : newText.length;
     var prefix = 0;
     while (prefix < maxPrefix &&
         oldText.codeUnitAt(prefix) == newText.codeUnitAt(prefix)) {

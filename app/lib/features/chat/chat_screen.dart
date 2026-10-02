@@ -1,11 +1,32 @@
 import 'package:dismessage_protocol/dismessage_protocol.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:image_picker/image_picker.dart';
 
 import '../../services/chat_session.dart';
 import '../../services/connection_service.dart';
 import '../../services/contacts_service.dart';
+import '../../services/image_codec.dart';
 import '../../widgets/contact_dialog.dart';
+import '../../widgets/emoji_panel.dart';
+import '../../widgets/image_bubble.dart';
 import '../../widgets/live_draft_bubble.dart';
+
+/// Lets the user choose a picture; null if cancelled.
+typedef ImagePickerFn = Future<Uint8List?> Function();
+
+/// Turns picked bytes into a sendable image.
+typedef ImageEncoderFn = Future<EncodedImage> Function(Uint8List bytes);
+
+Future<Uint8List?> _pickFromGallery() async {
+  final file = await ImagePicker().pickImage(
+    source: ImageSource.gallery,
+    // Native downscale on mobile: less work for the Dart encoder.
+    maxWidth: 2560,
+    maxHeight: 2560,
+  );
+  return file?.readAsBytes();
+}
 
 class ChatScreen extends StatefulWidget {
   const ChatScreen({
@@ -13,11 +34,15 @@ class ChatScreen extends StatefulWidget {
     required this.session,
     required this.connection,
     required this.contacts,
+    this.pickImage = _pickFromGallery,
+    this.encodeImage = ImageCodec.encodeInBackground,
   });
 
   final ChatSession session;
   final ConnectionService connection;
   final ContactsService contacts;
+  final ImagePickerFn pickImage;
+  final ImageEncoderFn encodeImage;
 
   @override
   State<ChatScreen> createState() => _ChatScreenState();
@@ -27,6 +52,8 @@ class _ChatScreenState extends State<ChatScreen> {
   final _input = TextEditingController();
   final _focus = FocusNode();
   final _scroll = ScrollController();
+  bool _showEmojis = false;
+  bool _preparingImage = false;
 
   ChatSession get _session => widget.session;
 
@@ -56,6 +83,43 @@ class _ChatScreenState extends State<ChatScreen> {
   void _send() {
     if (_session.sendMessage()) _input.clear();
     _focus.requestFocus();
+  }
+
+  /// Inserts [emoji] at the cursor (or replaces the selection).
+  void _insertEmoji(String emoji) {
+    final value = _input.value;
+    final selection = value.selection.isValid
+        ? value.selection
+        : TextSelection.collapsed(offset: value.text.length);
+    final text = value.text.replaceRange(selection.start, selection.end, emoji);
+    if (text.length > kMaxTextLength) return;
+    _input.value = TextEditingValue(
+      text: text,
+      selection: TextSelection.collapsed(
+        offset: selection.start + emoji.length,
+      ),
+    );
+    // Programmatic changes do not trigger onChanged: stream it ourselves.
+    _session.updateDraft(text);
+  }
+
+  Future<void> _sendImage() async {
+    final messenger = ScaffoldMessenger.of(context);
+    setState(() => _preparingImage = true);
+    try {
+      final picked = await widget.pickImage();
+      if (picked == null) return;
+      final encoded = await widget.encodeImage(picked);
+      _session.sendImage(encoded);
+    } on ImageCodecException catch (e) {
+      messenger.showSnackBar(SnackBar(content: Text(e.message)));
+    } catch (_) {
+      messenger.showSnackBar(
+        const SnackBar(content: Text("Impossible d'envoyer l'image.")),
+      );
+    } finally {
+      if (mounted) setState(() => _preparingImage = false);
+    }
   }
 
   /// Saves (or renames) the peer; only the name and ID are kept.
@@ -144,8 +208,14 @@ class _ChatScreenState extends State<ChatScreen> {
                 controller: _scroll,
                 padding: const EdgeInsets.all(12),
                 children: [
-                  for (final message in _session.messages)
-                    _MessageBubble(message: message),
+                  for (final entry in _session.messages)
+                    switch (entry) {
+                      ChatMessage() => _MessageBubble(message: entry),
+                      ChatImage() => ImageBubble(
+                        image: entry,
+                        onOpen: () => _session.openImage(entry),
+                      ),
+                    },
                   LiveDraftBubble(text: _session.remoteDraft),
                 ],
               ),
@@ -153,9 +223,34 @@ class _ChatScreenState extends State<ChatScreen> {
             SafeArea(
               top: false,
               child: Padding(
-                padding: const EdgeInsets.fromLTRB(12, 4, 12, 12),
+                padding: const EdgeInsets.fromLTRB(4, 4, 12, 12),
                 child: Row(
                   children: [
+                    IconButton(
+                      key: const Key('emoji-toggle'),
+                      tooltip: _showEmojis ? 'Clavier' : 'Émojis',
+                      icon: Icon(
+                        _showEmojis
+                            ? Icons.keyboard_outlined
+                            : Icons.emoji_emotions_outlined,
+                      ),
+                      onPressed: _session.peerLeft
+                          ? null
+                          : () => setState(() => _showEmojis = !_showEmojis),
+                    ),
+                    IconButton(
+                      key: const Key('send-image'),
+                      tooltip: 'Envoyer une image',
+                      icon: _preparingImage
+                          ? const SizedBox.square(
+                              dimension: 20,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : const Icon(Icons.image_outlined),
+                      onPressed: _session.peerLeft || _preparingImage
+                          ? null
+                          : _sendImage,
+                    ),
                     Expanded(
                       child: TextField(
                         key: const Key('chat-input'),
@@ -185,6 +280,8 @@ class _ChatScreenState extends State<ChatScreen> {
                 ),
               ),
             ),
+            if (_showEmojis && !_session.peerLeft)
+              EmojiPanel(onSelected: _insertEmoji),
           ],
         ),
       ),

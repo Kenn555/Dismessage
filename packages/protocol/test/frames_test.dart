@@ -20,11 +20,27 @@ void main() {
     const PeerLeftFrame(sid: 'sid1'),
     const SessionLeaveFrame(sid: 'sid1'),
     const DraftOpsFrame(
-        sid: 'sid1', seq: 1, ops: [EditOp(pos: 0, del: 0, ins: 'Bé😀')]),
+      sid: 'sid1',
+      seq: 1,
+      ops: [EditOp(pos: 0, del: 0, ins: 'Bé😀')],
+    ),
     const DraftSnapshotFrame(sid: 'sid1', seq: 2, text: 'Bonjour'),
     const DraftResyncFrame(sid: 'sid1'),
     const DraftClearFrame(sid: 'sid1', seq: 3),
     const MessageCommitFrame(sid: 'sid1', seq: 4, text: 'Salut'),
+    const ImageOfferFrame(
+      sid: 'sid1',
+      img: '0123456789abcdef',
+      width: 1280,
+      height: 960,
+      preview: '/9j/4AAQSkZJRg==',
+    ),
+    const ImageRequestFrame(sid: 'sid1', img: '0123456789abcdef'),
+    const ImageDataFrame(
+      sid: 'sid1',
+      img: '0123456789abcdef',
+      data: '/9j/4AAQSkZJRgABAQ==',
+    ),
     const ErrorFrame(code: 'bad_frame', message: 'oops'),
     const PingFrame(),
     const PongFrame(),
@@ -62,6 +78,15 @@ void main() {
       'text too long':
           '{"t":"message_commit","sid":"s","seq":1,"text":"$longText"}',
       'missing sid': '{"t":"draft_resync"}',
+      'bad image id': '{"t":"image_request","sid":"s","img":"../etc"}',
+      'image dimension zero':
+          '{"t":"image_offer","sid":"s","img":"0123456789abcdef","w":0,"h":10,"preview":"AA=="}',
+      'preview not base64':
+          '{"t":"image_offer","sid":"s","img":"0123456789abcdef","w":10,"h":10,"preview":"<script>"}',
+      'preview too large':
+          '{"t":"image_offer","sid":"s","img":"0123456789abcdef","w":10,"h":10,"preview":"${'A' * (kMaxImagePreviewLength + 1)}"}',
+      'image too large':
+          '{"t":"image_data","sid":"s","img":"0123456789abcdef","data":"${'A' * (kMaxImageDataLength + 1)}"}',
     };
     invalid.forEach((name, raw) {
       test(name, () {

@@ -3,10 +3,13 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:dismessage/services/chat_session.dart';
 import 'package:dismessage/services/connection_service.dart';
 import 'package:dismessage/services/identity_service.dart';
+import 'package:dismessage/services/image_codec.dart';
 import 'package:dismessage_server/dismessage_server.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:image/image.dart' as img;
 
 Future<void> waitFor(bool Function() condition, {String? reason}) async {
   final deadline = DateTime.now().add(const Duration(seconds: 5));
@@ -95,7 +98,7 @@ void main() {
 
     expect(a.session!.sendMessage(), isTrue);
     await waitFor(() => b.session!.messages.isNotEmpty, reason: 'message');
-    expect(b.session!.messages.single.text, typed);
+    expect((b.session!.messages.single as ChatMessage).text, typed);
     expect(b.session!.messages.single.fromMe, isFalse);
     expect(b.session!.remoteDraft, '');
     expect(a.session!.messages.single.fromMe, isTrue);
@@ -195,5 +198,37 @@ void main() {
     final b = await startClient();
     await pair(a, b);
     expect(a.pendingRequest, isNull);
+  });
+
+  test('a real photo goes through the relay only once opened', () async {
+    final a = await startClient();
+    final b = await startClient();
+    await pair(a, b);
+
+    // A noisy 1600x1200 picture: compresses badly, close to the size limit.
+    final picture = img.Image(width: 1600, height: 1200);
+    var seed = 3;
+    for (final pixel in picture) {
+      seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+      pixel
+        ..r = seed & 0xff
+        ..g = (seed >> 8) & 0xff
+        ..b = (seed >> 16) & 0xff;
+    }
+    final encoded = ImageCodec.encode(img.encodePng(picture));
+    final sent = a.session!.sendImage(encoded)!;
+
+    await waitFor(() => b.session!.messages.isNotEmpty, reason: 'offer');
+    final received = b.session!.messages.single as ChatImage;
+    expect(received.status, ImageStatus.blurred);
+    expect(received.bytes, isNull);
+
+    b.session!.openImage(received);
+    await waitFor(
+      () => received.status == ImageStatus.opened,
+      reason: 'full image',
+    );
+    expect(received.bytes, encoded.bytes);
+    await waitFor(() => sent.status == ImageStatus.opened, reason: 'receipt');
   });
 }

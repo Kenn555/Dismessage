@@ -278,6 +278,33 @@ void main() {
       await c.expectSilence();
     });
 
+    test('images: offer, request and full data reach the peer only', () async {
+      final a = await (await client()).register(idA);
+      final b = await (await client()).register(idB);
+      final c = await (await client()).register(idC);
+      final sid = await pair(a, b);
+      const img = '0123456789abcdef';
+
+      a.send(
+        ImageOfferFrame(
+          sid: sid,
+          img: img,
+          width: 800,
+          height: 600,
+          preview: 'AAAA',
+        ),
+      );
+      expect((await b.expectNext<ImageOfferFrame>()).width, 800);
+      b.send(ImageRequestFrame(sid: sid, img: img));
+      await a.expectNext<ImageRequestFrame>();
+
+      // Close to the maximum size: must go through in one frame.
+      final data = 'A' * (kMaxImageDataLength - 4);
+      a.send(ImageDataFrame(sid: sid, img: img, data: data));
+      expect((await b.expectNext<ImageDataFrame>()).data.length, data.length);
+      await c.expectSilence();
+    });
+
     test('a third party cannot inject into a session', () async {
       final a = await (await client()).register(idA);
       final b = await (await client()).register(idB);
