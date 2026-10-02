@@ -1,0 +1,19 @@
+# Dart / Flutter
+.dart_tool/
+.packages
+build/
+pubspec_overrides.yaml
+*.iml
+.idea/
+.flutter-plugins
+.flutter-plugins-dependencies
+
+# Server runtime data (ID registry)
+server/data/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Distributable builds
+dist/

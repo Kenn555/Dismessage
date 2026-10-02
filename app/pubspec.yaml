@@ -1,0 +1,25 @@
+name: dismessage
+description: "Messagerie où l'on voit l'interlocuteur écrire en direct."
+publish_to: 'none'
+version: 0.1.0+1
+
+environment:
+  sdk: ^3.8.0
+
+dependencies:
+  flutter:
+    sdk: flutter
+  dismessage_protocol:
+    path: ../packages/protocol
+  shared_preferences: ^2.5.3
+  web_socket_channel: ^3.0.3
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  dismessage_server:
+    path: ../server
+  flutter_lints: ^5.0.0
+
+flutter:
+  uses-material-design: true

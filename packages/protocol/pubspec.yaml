@@ -1,0 +1,11 @@
+name: dismessage_protocol
+description: Shared protocol, IDs and live-typing diff logic for Dismessage.
+version: 0.1.0
+publish_to: none
+
+environment:
+  sdk: ^3.8.0
+
+dev_dependencies:
+  lints: ^5.1.1
+  test: ^1.25.15
