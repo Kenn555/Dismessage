@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
 
+import '../../services/camera_capture.dart';
 import '../../services/chat_session.dart';
 import '../../services/connection_service.dart';
 import '../../services/contacts_service.dart';
@@ -22,6 +23,7 @@ import '../../widgets/image_bubble.dart';
 import '../../widgets/live_draft_bubble.dart';
 import '../../widgets/message_actions.dart';
 import '../../widgets/voice_bubble.dart';
+import 'camera_screen.dart';
 
 export 'package:image_picker/image_picker.dart' show ImageSource;
 
@@ -50,6 +52,7 @@ class ChatScreen extends StatefulWidget {
     required this.contacts,
     this.pickImage = _pickImage,
     this.cameraAvailable,
+    this.createCamera = platformCameraCapture,
     this.encodeImage = ImageCodec.encodeInBackground,
     this.createRecorder = platformVoiceRecorder,
     this.createAudioBackend = platformAudioBackend,
@@ -60,9 +63,12 @@ class ChatScreen extends StatefulWidget {
   final ContactsService contacts;
   final ImagePickerFn pickImage;
 
-  /// Whether a photo can be taken here; detected when null (no camera
-  /// support on Windows: the gallery opens directly).
+  /// Whether a photo can be taken here; detected when null.
   final bool? cameraAvailable;
+
+  /// Live webcam where `image_picker` cannot take photos itself (desktop
+  /// browsers, Windows); null elsewhere.
+  final CameraCapture? Function() createCamera;
   final ImageEncoderFn encodeImage;
   final VoiceRecorder Function() createRecorder;
   final AudioBackend Function() createAudioBackend;
@@ -78,7 +84,8 @@ class _ChatScreenState extends State<ChatScreen> {
   late final _player = VoicePlayer(widget.createAudioBackend);
   late final bool _cameraAvailable =
       widget.cameraAvailable ??
-      ImagePicker().supportsImageSource(ImageSource.camera);
+      (widget.createCamera() != null ||
+          ImagePicker().supportsImageSource(ImageSource.camera));
 
   /// One key per bubble, to scroll to the original of a reply.
   final Map<String, GlobalKey> _keys = {};
@@ -212,9 +219,20 @@ class _ChatScreenState extends State<ChatScreen> {
 
   Future<void> _sendImage(ImageSource source) async {
     final messenger = ScaffoldMessenger.of(context);
+    final navigator = Navigator.of(context);
     setState(() => _preparingImage = true);
     try {
-      final picked = await widget.pickImage(source);
+      final camera = source == ImageSource.camera
+          ? widget.createCamera()
+          : null;
+      final picked = camera == null
+          ? await widget.pickImage(source)
+          : await navigator.push<Uint8List>(
+              MaterialPageRoute(
+                fullscreenDialog: true,
+                builder: (_) => CameraScreen(capture: camera),
+              ),
+            );
       if (picked == null) return;
       final encoded = await widget.encodeImage(picked);
       if (_session.sendImage(encoded, replyTo: _replyTo) != null && mounted) {

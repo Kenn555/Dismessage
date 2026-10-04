@@ -1,10 +1,12 @@
 import 'dart:async';
 import 'dart:typed_data';
 
+import 'package:dismessage/services/camera_capture.dart';
 import 'package:dismessage/services/chat_session.dart';
 import 'package:dismessage/services/voice_player.dart';
 import 'package:dismessage/services/voice_recorder.dart';
 import 'package:dismessage_protocol/dismessage_protocol.dart';
+import 'package:flutter/widgets.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 /// Records what the app sends.
@@ -118,4 +120,36 @@ class FakeAudioBackend implements AudioBackend {
     await _positions.close();
     await _completions.close();
   }
+}
+
+/// Webcam driven by the test.
+class FakeCameraCapture implements CameraCapture {
+  FakeCameraCapture({this.failure, Uint8List? photo})
+    : photo = photo ?? Uint8List.fromList([0xff, 0xd8, 0xff]);
+
+  /// Thrown by [open] (no webcam, access refused…).
+  CameraCaptureException? failure;
+  final Uint8List photo;
+  bool opened = false;
+  bool closed = false;
+
+  @override
+  double get aspectRatio => 4 / 3;
+
+  @override
+  Future<void> open() async {
+    final failure = this.failure;
+    if (failure != null) throw failure;
+    opened = true;
+  }
+
+  @override
+  Widget preview() =>
+      const ColoredBox(key: Key('fake-preview'), color: Color(0xFF336699));
+
+  @override
+  Future<Uint8List> takePicture() async => photo;
+
+  @override
+  Future<void> close() async => closed = true;
 }

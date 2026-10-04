@@ -16,6 +16,10 @@ dependencies:
   audioplayers_platform_interface: ^7.0.0
   audioplayers_web: ^5.0.1
   audioplayers_windows: ^4.0.0
+  # Webcam in the Windows app (the web uses getUserMedia directly; Android
+  # takes photos through image_picker). 0.2.6+5 and later need Flutter 3.38.
+  camera_platform_interface: ^2.12.0
+  camera_windows: ^0.2.6+4
   image: ^4.5.4
   image_picker: ^1.2.1
   path_provider: ^2.1.5

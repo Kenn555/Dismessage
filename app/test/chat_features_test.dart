@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'package:dismessage/config.dart';
 import 'package:dismessage/features/chat/chat_screen.dart';
+import 'package:dismessage/services/camera_capture.dart';
 import 'package:dismessage/services/chat_session.dart';
 import 'package:dismessage/services/connection_service.dart';
 import 'package:dismessage/services/contacts_service.dart';
@@ -34,6 +35,7 @@ void main() {
     WidgetTester tester, {
     bool camera = false,
     FakeVoiceRecorder? mic,
+    FakeCameraCapture? webcam,
   }) async {
     tester.view.physicalSize = const Size(900, 1600);
     tester.view.devicePixelRatio = 1;
@@ -72,6 +74,7 @@ void main() {
             return jpeg;
           },
           cameraAvailable: camera,
+          createCamera: () => webcam,
           encodeImage: (_) async => encoded,
           createRecorder: () => recorder,
           createAudioBackend: () => audio = FakeAudioBackend(),
@@ -290,6 +293,55 @@ void main() {
       expect(picked, [ImageSource.camera, ImageSource.gallery]);
     });
 
+    testWidgets('on PC, "take a photo" opens the webcam, then sends', (
+      tester,
+    ) async {
+      final webcam = FakeCameraCapture();
+      await pumpChat(tester, camera: true, webcam: webcam);
+      await tester.tap(find.byKey(const Key('send-image')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('pick-camera')));
+      await tester.pumpAndSettle();
+
+      expect(webcam.opened, isTrue);
+      expect(find.byKey(const Key('fake-preview')), findsOneWidget);
+      await tester.tap(find.byKey(const Key('camera-shutter')));
+      await tester.pumpAndSettle();
+
+      expect(picked, isEmpty, reason: 'image_picker is not used');
+      expect(sent.whereType<ImageOfferFrame>(), hasLength(1));
+      expect(webcam.closed, isTrue, reason: 'the webcam is released');
+    });
+
+    testWidgets('closing the webcam sends nothing', (tester) async {
+      final webcam = FakeCameraCapture();
+      await pumpChat(tester, camera: true, webcam: webcam);
+      await tester.tap(find.byKey(const Key('send-image')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('pick-camera')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('camera-close')));
+      await tester.pumpAndSettle();
+      expect(sent.whereType<ImageOfferFrame>(), isEmpty);
+      expect(webcam.closed, isTrue);
+    });
+
+    testWidgets('a missing or refused webcam says why', (tester) async {
+      final webcam = FakeCameraCapture(
+        failure: const CameraCaptureException('Aucune webcam détectée.'),
+      );
+      await pumpChat(tester, camera: true, webcam: webcam);
+      await tester.tap(find.byKey(const Key('send-image')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('pick-camera')));
+      await tester.pumpAndSettle();
+      expect(find.text('Aucune webcam détectée.'), findsOneWidget);
+      // The shutter does nothing.
+      await tester.tap(find.byKey(const Key('camera-shutter')));
+      await tester.pumpAndSettle();
+      expect(sent.whereType<ImageOfferFrame>(), isEmpty);
+    });
+
     testWidgets('an unexpected failure shows its cause', (tester) async {
       await pumpChat(tester);
       await tester.pumpWidget(
@@ -303,6 +355,7 @@ void main() {
             contacts: ContactsService(MemoryStore()),
             pickImage: (_) async => throw StateError('picker cassé'),
             cameraAvailable: false,
+            createCamera: () => null,
             createAudioBackend: FakeAudioBackend.new,
           ),
         ),

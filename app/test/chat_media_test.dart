@@ -51,6 +51,7 @@ void main() {
           contacts: ContactsService(store),
           pickImage: pick ?? (_) async => jpeg,
           cameraAvailable: false,
+          createCamera: () => null,
           encodeImage: encode ?? (_) async => encoded,
           createAudioBackend: FakeAudioBackend.new,
         ),
