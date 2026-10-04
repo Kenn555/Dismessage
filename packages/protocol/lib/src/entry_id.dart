@@ -11,4 +11,8 @@ abstract final class EntryId {
   }
 
   static bool isValid(String id) => _pattern.hasMatch(id);
+
+  /// ID of a message from a version without bubble IDs, derived from its
+  /// draft sequence number (unique per sender and session).
+  static String legacy(int seq) => seq.toRadixString(16).padLeft(16, '0');
 }

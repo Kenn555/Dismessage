@@ -89,6 +89,14 @@ void main() {
       expect(decoded.reply, isNull);
     });
 
+    test('a message from an older version gets a stable ID', () {
+      const raw = '{"t":"message_commit","sid":"s","seq":26,"text":"x"}';
+      final decoded = Frame.decode(raw) as MessageCommitFrame;
+      expect(decoded.mid, '000000000000001a');
+      expect(EntryId.isValid(decoded.mid), isTrue);
+      expect((Frame.decode(raw) as MessageCommitFrame).mid, decoded.mid);
+    });
+
     test('an empty emoji removes a reaction', () {
       final decoded = Frame.decode(
         '{"t":"reaction","sid":"s","ref":"aaaabbbbccccdddd","emoji":""}',
@@ -121,8 +129,6 @@ void main() {
           '{"t":"draft_ops","sid":"s","seq":1,"ops":[{"pos":-1,"del":0,"ins":""}]}',
       'text too long':
           '{"t":"message_commit","sid":"s","seq":1,"text":"$longText","mid":"aaaabbbbccccdddd"}',
-      'message without mid':
-          '{"t":"message_commit","sid":"s","seq":1,"text":"x"}',
       'bad reply id':
           '{"t":"message_commit","sid":"s","seq":1,"text":"x","mid":"aaaabbbbccccdddd","reply":"../x"}',
       'reaction too long':

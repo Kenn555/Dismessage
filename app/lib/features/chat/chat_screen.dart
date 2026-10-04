@@ -221,13 +221,14 @@ class _ChatScreenState extends State<ChatScreen> {
       }
     } on ImageCodecException catch (e) {
       messenger.showSnackBar(SnackBar(content: Text(e.message)));
-    } catch (_) {
+    } catch (e) {
+      // Show the cause: a remote friend can then report it.
+      final cause = e.toString().split('\n').first;
       messenger.showSnackBar(
         SnackBar(
           content: Text(
-            source == ImageSource.camera
-                ? "Impossible d'utiliser l'appareil photo."
-                : "Impossible d'envoyer l'image.",
+            '${source == ImageSource.camera ? "Impossible d'utiliser l'appareil photo" : "Impossible d'envoyer l'image"} '
+            '(${cause.length > 160 ? '${cause.substring(0, 160)}…' : cause}).',
           ),
         ),
       );

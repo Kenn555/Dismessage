@@ -267,6 +267,30 @@ void main() {
       expect(picked, [ImageSource.camera, ImageSource.gallery]);
     });
 
+    testWidgets('an unexpected failure shows its cause', (tester) async {
+      await pumpChat(tester);
+      await tester.pumpWidget(
+        MaterialApp(
+          home: ChatScreen(
+            session: session,
+            connection: ConnectionService(
+              identity: IdentityService(MemoryStore()),
+              serverUri: Uri.parse('ws://x/ws'),
+            ),
+            contacts: ContactsService(MemoryStore()),
+            pickImage: (_) async => throw StateError('picker cassé'),
+            cameraAvailable: false,
+            createAudioBackend: FakeAudioBackend.new,
+          ),
+        ),
+      );
+      await tester.tap(find.byKey(const Key('send-image')));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(find.textContaining('picker cassé'), findsOneWidget);
+      expect(sent.whereType<ImageOfferFrame>(), isEmpty);
+    });
+
     testWidgets('without camera the gallery opens directly', (tester) async {
       await pumpChat(tester);
       await tester.tap(find.byKey(const Key('send-image')));

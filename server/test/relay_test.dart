@@ -356,6 +356,19 @@ void main() {
       await c.expectSilence();
     });
 
+    test('messages from an older client (no mid) still go through', () async {
+      final a = await (await client()).register(idA);
+      final b = await (await client()).register(idB);
+      final sid = await pair(a, b);
+      a.channel.sink.add(
+        '{"t":"message_commit","sid":"$sid","seq":1,"text":"Bonjour"}',
+      );
+      final commit = await b.expectNext<MessageCommitFrame>();
+      expect(commit.text, 'Bonjour');
+      expect(EntryId.isValid(commit.mid), isTrue);
+      await a.expectSilence();
+    });
+
     test('a third party cannot inject into a session', () async {
       final a = await (await client()).register(idA);
       final b = await (await client()).register(idB);

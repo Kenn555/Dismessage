@@ -74,7 +74,8 @@ sealed class Frame {
           sid: r.str('sid'),
           seq: r.seq(),
           text: r.text(),
-          mid: r.entryId('mid'),
+          // Versions before bubble IDs send no "mid": derive a stable one.
+          mid: r.optionalEntryId('mid') ?? EntryId.legacy(r.seq()),
           reply: r.optionalEntryId('reply'),
         ),
         'image_offer' => ImageOfferFrame(

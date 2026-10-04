@@ -24,15 +24,30 @@ if errorlevel 1 (
   goto fail
 )
 
-rem Client web : compile s'il est absent ou si --rebuild est demande.
+rem Client web : compile s'il est absent, si --rebuild est demande, ou si le
+rem code a change depuis la derniere compilation (commit different ou
+rem modifications non commitees). Un client perime parle mal au serveur.
+set "STAMP=%ROOT%app\build\web\.dismessage-commit"
+set "HEAD="
+for /f %%h in ('git -C "%ROOT%." rev-parse HEAD 2^>nul') do set "HEAD=%%h"
+set "DIRTY="
+if defined HEAD (
+  git -C "%ROOT%." diff --quiet HEAD -- app/lib app/web app/pubspec.yaml packages/protocol/lib || set "DIRTY=1"
+)
+set "BUILT="
+if exist "%STAMP%" set /p BUILT=<"%STAMP%"
 if defined REBUILD goto build_web
-if exist "%ROOT%app\build\web\index.html" goto web_ok
+if not exist "%ROOT%app\build\web\index.html" goto build_web
+if defined DIRTY goto build_web
+if defined HEAD if not "%BUILT%"=="%HEAD%" goto build_web
+goto web_ok
 :build_web
 echo [1/3] Compilation du client web...
 pushd "%ROOT%app"
 call flutter build web --release
 if errorlevel 1 (popd & echo [ERREUR] Compilation web echouee. & goto fail)
 popd
+if defined HEAD if not defined DIRTY (>"%STAMP%" echo %HEAD%)
 :web_ok
 
 echo [2/3] Dependances du serveur...

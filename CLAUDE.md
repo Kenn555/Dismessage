@@ -78,7 +78,7 @@ cd app && flutter run -d <android> --dart-define=SERVER_URL=ws://10.0.2.2:8080
 
 Le serveur sert à la fois le relais (`/ws`) et le client web (`app/build/web`, variable `DISMESSAGE_WEB`). Un seul lien public suffit donc.
 
-1. Double-cliquer sur `start-server.bat` (à la racine). Il compile le client web s'il manque (`--rebuild` pour forcer), puis démarre le serveur sur le port 8080 (`start-server.bat 9000` pour un autre port).
+1. Double-cliquer sur `start-server.bat` (à la racine). Il compile le client web s'il manque ou si le code a changé depuis la dernière compilation (commit noté dans `app/build/web/.dismessage-commit`, ou modifications non commitées ; `--rebuild` pour forcer). Un client web périmé face à un serveur récent produit des erreurs de trame, puis démarre le serveur sur le port 8080 (`start-server.bat 9000` pour un autre port).
 2. VS Code, onglet **Ports** : transférer le port `8080` et passer sa **visibilité en Public**. En privé, les clients extérieurs sont redirigés vers une connexion GitHub.
 3. Navigateur : ouvrir le lien `https://xxxx-8080.<région>.devtunnels.ms`. La page parle à son propre serveur (`ServerAddress.sameOrigin`).
 4. Windows et Android : bouton **Serveur** de l'accueil, puis coller le même lien. Il est converti en `wss://…/ws` (`ServerAddress.parse`) et mémorisé.
@@ -111,7 +111,7 @@ Enveloppe : `{"t": "<type>", ...champs}`. Les trames de session portent `sid`.
 | `draft_snapshot` | C→S→C | `sid`, `seq`, `text` |
 | `draft_resync` | C→S→C | `sid` |
 | `draft_clear` | C→S→C | `sid`, `seq` |
-| `message_commit` | C→S→C | `sid`, `seq`, `text`, `mid` (EntryId), `reply`? (EntryId de la bulle citée) |
+| `message_commit` | C→S→C | `sid`, `seq`, `text`, `mid` (EntryId ; absent chez les anciennes versions → `EntryId.legacy(seq)`), `reply`? (EntryId de la bulle citée) |
 | `image_offer` | C→S→C | `sid`, `img` (EntryId), `w`, `h`, `preview` (JPEG base64, déjà flouté, ≤ `kMaxImagePreviewLength`), `reply`? |
 | `image_request` | C→S→C | `sid`, `img` (le destinataire ouvre l'image ; sert aussi d'accusé « Ouverte ») |
 | `image_data` | C→S→C | `sid`, `img`, `data` (JPEG base64, ≤ `kMaxImageDataLength`) |
