@@ -1,8 +1,10 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'config.dart';
 import 'features/home/home_screen.dart';
+import 'services/background_mode.dart';
 import 'services/connection_service.dart';
 import 'services/contacts_service.dart';
 import 'services/identity_service.dart';
@@ -28,7 +30,12 @@ Future<void> main() async {
     notifier: platformNotifier(),
   );
   // Notify only what the user cannot see: app in the background, minimized,
-  // another window or tab in front.
+  // another window or tab in front. On Android the app may have been
+  // started at boot with no screen (background mode): hidden until resumed.
+  final initial = WidgetsBinding.instance.lifecycleState;
+  notifications.appVisible = initial == null
+      ? !(!kIsWeb && defaultTargetPlatform == TargetPlatform.android)
+      : initial == AppLifecycleState.resumed;
   AppLifecycleListener(
     onStateChange: (state) =>
         notifications.appVisible = state == AppLifecycleState.resumed,
@@ -38,6 +45,7 @@ Future<void> main() async {
       connection: connection,
       settings: settings,
       contacts: contacts,
+      background: BackgroundMode(store),
     ),
   );
 }
@@ -48,11 +56,13 @@ class DismessageApp extends StatelessWidget {
     required this.connection,
     required this.settings,
     required this.contacts,
+    this.background,
   });
 
   final ConnectionService connection;
   final ServerSettings settings;
   final ContactsService contacts;
+  final BackgroundMode? background;
 
   @override
   Widget build(BuildContext context) {
@@ -65,6 +75,7 @@ class DismessageApp extends StatelessWidget {
         connection: connection,
         settings: settings,
         contacts: contacts,
+        background: background,
       ),
     );
   }

@@ -2,6 +2,7 @@ package com.dismessage.dismessage
 
 import android.Manifest
 import android.app.Activity
+import android.content.Context
 import android.content.pm.PackageManager
 import android.media.MediaPlayer
 import android.media.MediaRecorder
@@ -15,7 +16,7 @@ import java.io.File
  * MediaPlayer): no extra Gradle dependency. Channel "dismessage/voice".
  */
 class VoiceHandler(
-    private val activity: Activity,
+    private val context: Context,
     private val channel: MethodChannel,
 ) : MethodChannel.MethodCallHandler {
 
@@ -28,6 +29,9 @@ class VoiceHandler(
     private var player: MediaPlayer? = null
     private var playFile: File? = null
     private var pendingPermission: MethodChannel.Result? = null
+
+    /** The screen, when the app is shown: needed to ask for permissions. */
+    var activity: Activity? = null
 
     override fun onMethodCall(call: MethodCall, result: MethodChannel.Result) {
         try {
@@ -67,7 +71,7 @@ class VoiceHandler(
     }
 
     private fun granted() = Build.VERSION.SDK_INT < Build.VERSION_CODES.M ||
-        activity.checkSelfPermission(Manifest.permission.RECORD_AUDIO) ==
+        context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) ==
         PackageManager.PERMISSION_GRANTED
 
     private fun hasPermission(request: Boolean, result: MethodChannel.Result) {
@@ -75,9 +79,14 @@ class VoiceHandler(
             result.success(granted())
             return
         }
+        val screen = activity
+        if (screen == null) {
+            result.success(false)
+            return
+        }
         pendingPermission?.success(false)
         pendingPermission = result
-        activity.requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), PERMISSION_REQUEST)
+        screen.requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), PERMISSION_REQUEST)
     }
 
     fun onPermissionResult(requestCode: Int, grantResults: IntArray) {
@@ -91,7 +100,7 @@ class VoiceHandler(
     private fun startRecording(path: String, bitRate: Int) {
         cancelRecording()
         val r = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            MediaRecorder(activity)
+            MediaRecorder(context)
         } else {
             @Suppress("DEPRECATION")
             MediaRecorder()
@@ -141,7 +150,7 @@ class VoiceHandler(
         stopPlayback()
         // MediaPlayer needs a file before API 23: keep it in the cache only
         // while playing.
-        val file = File.createTempFile("dismessage_play", ".m4a", activity.cacheDir)
+        val file = File.createTempFile("dismessage_play", ".m4a", context.cacheDir)
         file.writeBytes(bytes)
         val p = MediaPlayer()
         try {

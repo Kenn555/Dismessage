@@ -27,8 +27,15 @@ class ChatNotifications implements NotifierCallbacks {
     _events = _connection.events.listen(_onEvent);
     _onConnection();
     // Asked at startup: a request can come before any conversation.
-    _notifier.requestPermission();
+    _askPermission();
   }
+
+  bool _granted = false;
+
+  /// Started in the background (no screen to ask), the request is refused:
+  /// asked again when the app is shown.
+  Future<void> _askPermission() async =>
+      _granted = await _notifier.requestPermission();
 
   final ConnectionService _connection;
   final ContactsService _contacts;
@@ -62,6 +69,7 @@ class ChatNotifications implements NotifierCallbacks {
     _visible = visible;
     final session = _session;
     if (visible) {
+      if (!_granted) _askPermission();
       _clear();
       if (session != null) _seen = session.messages.length;
       // The request dialogs are on screen now.

@@ -20,7 +20,7 @@ import io.flutter.plugin.common.MethodChannel
  * APIs only (no extra Gradle dependency). Channel "dismessage/notify".
  */
 class NotificationHandler(
-    private val activity: Activity,
+    private val context: Context,
     private val channel: MethodChannel,
 ) : MethodChannel.MethodCallHandler {
 
@@ -38,8 +38,11 @@ class NotificationHandler(
     }
 
     private val manager =
-        activity.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
     private var pendingPermission: MethodChannel.Result? = null
+
+    /** The screen, when the app is shown: needed to ask for permissions. */
+    var activity: Activity? = null
 
     init {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -84,15 +87,21 @@ class NotificationHandler(
     private fun requestPermission(result: MethodChannel.Result) {
         // Before Android 13, notifications are allowed by default.
         if (Build.VERSION.SDK_INT < 33 ||
-            activity.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) ==
+            context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) ==
             PackageManager.PERMISSION_GRANTED
         ) {
             result.success(manager.areNotificationsEnabled())
             return
         }
+        val screen = activity
+        if (screen == null) {
+            // Started in the background: asked again when the app is opened.
+            result.success(false)
+            return
+        }
         pendingPermission?.success(false)
         pendingPermission = result
-        activity.requestPermissions(
+        screen.requestPermissions(
             arrayOf(Manifest.permission.POST_NOTIFICATIONS),
             PERMISSION_REQUEST,
         )
@@ -115,10 +124,10 @@ class NotificationHandler(
         actions: List<Map<String, Any?>>,
     ) {
         val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            Notification.Builder(activity, CHANNEL_ID)
+            Notification.Builder(context, CHANNEL_ID)
         } else {
             @Suppress("DEPRECATION")
-            Notification.Builder(activity).setPriority(
+            Notification.Builder(context).setPriority(
                 if (alert) Notification.PRIORITY_HIGH else Notification.PRIORITY_LOW,
             )
         }
@@ -163,12 +172,12 @@ class NotificationHandler(
 
     /** A button that also opens the app (e.g. accepting a request). */
     private fun actionActivityIntent(tag: String, action: String): PendingIntent {
-        val intent = Intent(activity, MainActivity::class.java)
+        val intent = Intent(context, MainActivity::class.java)
             .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)
             .putExtra(EXTRA_TAG, tag)
             .putExtra(EXTRA_ACTION, action)
         return PendingIntent.getActivity(
-            activity,
+            context,
             "$tag/$action".hashCode(),
             intent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
@@ -177,12 +186,12 @@ class NotificationHandler(
 
     /** A button handled without showing the app (e.g. refusing). */
     private fun actionBroadcastIntent(tag: String, action: String): PendingIntent {
-        val intent = Intent(activity, ReplyReceiver::class.java)
+        val intent = Intent(context, ReplyReceiver::class.java)
             .setAction(ACTION_BUTTON)
             .putExtra(EXTRA_TAG, tag)
             .putExtra(EXTRA_ACTION, action)
         return PendingIntent.getBroadcast(
-            activity,
+            context,
             "$tag/$action".hashCode(),
             intent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
@@ -195,11 +204,11 @@ class NotificationHandler(
     }
 
     private fun openIntent(tag: String): PendingIntent {
-        val intent = Intent(activity, MainActivity::class.java)
+        val intent = Intent(context, MainActivity::class.java)
             .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)
             .putExtra(EXTRA_TAG, tag)
         return PendingIntent.getActivity(
-            activity,
+            context,
             tag.hashCode(),
             intent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
@@ -207,7 +216,7 @@ class NotificationHandler(
     }
 
     private fun replyIntent(tag: String): PendingIntent {
-        val intent = Intent(activity, ReplyReceiver::class.java)
+        val intent = Intent(context, ReplyReceiver::class.java)
             .setAction(ACTION_REPLY)
             .putExtra(EXTRA_TAG, tag)
         // The reply text is added by the system: the intent must be mutable.
@@ -217,7 +226,7 @@ class NotificationHandler(
             0
         }
         return PendingIntent.getBroadcast(
-            activity,
+            context,
             tag.hashCode(),
             intent,
             PendingIntent.FLAG_UPDATE_CURRENT or mutable,

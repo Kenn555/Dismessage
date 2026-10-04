@@ -1,22 +1,24 @@
 package com.dismessage.dismessage
 
+import android.content.Context
 import android.content.Intent
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
-import io.flutter.plugin.common.MethodChannel
 
 class MainActivity : FlutterActivity() {
-    private var voice: VoiceHandler? = null
-    private var notifications: NotificationHandler? = null
+
+    /** The shared engine: it outlives this screen (background mode). */
+    override fun provideFlutterEngine(context: Context): FlutterEngine =
+        EngineHolder.get(context)
+
+    override fun shouldDestroyEngineWithHost(): Boolean = false
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
-        super.configureFlutterEngine(flutterEngine)
-        val messenger = flutterEngine.dartExecutor.binaryMessenger
-        val voiceChannel = MethodChannel(messenger, "dismessage/voice")
-        voice = VoiceHandler(this, voiceChannel).also { voiceChannel.setMethodCallHandler(it) }
-        val notifyChannel = MethodChannel(messenger, "dismessage/notify")
-        notifications = NotificationHandler(this, notifyChannel)
-            .also { notifyChannel.setMethodCallHandler(it) }
+        // Channels and plugins are set up once, by EngineHolder; this screen
+        // only lends itself for permission requests.
+        EngineHolder.voice?.activity = this
+        EngineHolder.notifications?.activity = this
+        if (EngineHolder.backgroundEnabled(this)) BackgroundService.start(this)
     }
 
     /** A notification was tapped while the app was running. */
@@ -25,9 +27,9 @@ class MainActivity : FlutterActivity() {
         val tag = intent.getStringExtra(NotificationHandler.EXTRA_TAG) ?: return
         val action = intent.getStringExtra(NotificationHandler.EXTRA_ACTION)
         if (action != null) {
-            notifications?.onAction(tag, action)
+            EngineHolder.notifications?.onAction(tag, action)
         } else {
-            notifications?.onOpened(tag)
+            EngineHolder.notifications?.onOpened(tag)
         }
     }
 
@@ -37,13 +39,17 @@ class MainActivity : FlutterActivity() {
         grantResults: IntArray,
     ) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        voice?.onPermissionResult(requestCode, grantResults)
-        notifications?.onPermissionResult(requestCode, grantResults)
+        EngineHolder.voice?.onPermissionResult(requestCode, grantResults)
+        EngineHolder.notifications?.onPermissionResult(requestCode, grantResults)
     }
 
     override fun onDestroy() {
-        voice?.release()
-        notifications?.release()
+        // The engine (connection, notifications) keeps running: only forget
+        // this screen.
+        if (EngineHolder.voice?.activity === this) EngineHolder.voice?.activity = null
+        if (EngineHolder.notifications?.activity === this) {
+            EngineHolder.notifications?.activity = null
+        }
         super.onDestroy()
     }
 }

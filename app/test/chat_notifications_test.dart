@@ -18,6 +18,9 @@ class FakeNotifier implements SystemNotifier {
   final shown = <ChatNotice>[];
   final cancelled = <String>[];
   int permissionRequests = 0;
+
+  /// Answer to the permission request (false: started with no screen).
+  bool grant = true;
   NotifierCallbacks? callbacks;
 
   @override
@@ -26,7 +29,7 @@ class FakeNotifier implements SystemNotifier {
   @override
   Future<bool> requestPermission() async {
     permissionRequests++;
-    return true;
+    return grant;
   }
 
   @override
@@ -93,6 +96,26 @@ void main() {
 
   test('asks once for the right to notify', () {
     expect(notifier.permissionRequests, 1);
+    notifications.appVisible = false;
+    notifications.appVisible = true;
+    expect(notifier.permissionRequests, 1, reason: 'already granted');
+  });
+
+  test('refused with no screen (boot), asked again when shown', () async {
+    final hidden = FakeNotifier()..grant = false;
+    final other = ChatNotifications(
+      connection: connection,
+      contacts: contacts,
+      notifier: hidden,
+    );
+    addTearDown(other.dispose);
+    other.appVisible = false;
+    await pumpEventQueue();
+    expect(hidden.permissionRequests, 1);
+    hidden.grant = true;
+    other.appVisible = true;
+    await pumpEventQueue();
+    expect(hidden.permissionRequests, 2);
   });
 
   test('nothing is notified while the conversation is visible', () async {

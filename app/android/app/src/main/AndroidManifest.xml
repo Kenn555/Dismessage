@@ -6,6 +6,11 @@
     <uses-permission android:name="android.permission.RECORD_AUDIO"/>
     <!-- Notifications of messages and typing (asked at runtime, Android 13+). -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+    <!-- Background mode (optional, chosen in the app): stay connected with
+         the screen closed, and start with the phone. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE"/>
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>
     <application
         android:label="Dismessage"
         android:name="${applicationName}"
@@ -36,6 +41,24 @@
         <receiver
             android:name=".ReplyReceiver"
             android:exported="false" />
+        <!-- Keeps the connection alive with the screen closed. -->
+        <service
+            android:name=".BackgroundService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Keeps a live messaging connection so the user is notified of messages, typing and chat requests." />
+        </service>
+        <!-- Starts the background mode with the phone (if chosen). -->
+        <receiver
+            android:name=".BootReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
         <!-- Don't delete the meta-data below.
              This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->
         <meta-data

@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../../config.dart';
+import '../../services/background_mode.dart';
 import '../../services/connection_service.dart';
 import '../../services/contacts_service.dart';
 import '../../services/id_privacy.dart';
@@ -21,6 +22,7 @@ class HomeScreen extends StatefulWidget {
     required this.settings,
     required this.contacts,
     this.privacy,
+    this.background,
   });
 
   final ConnectionService connection;
@@ -29,6 +31,9 @@ class HomeScreen extends StatefulWidget {
 
   /// Which IDs are shown in full (masked by default).
   final IdPrivacy? privacy;
+
+  /// Android background mode; no settings button when null or unsupported.
+  final BackgroundMode? background;
 
   @override
   State<HomeScreen> createState() => _HomeScreenState();
@@ -214,6 +219,37 @@ class _HomeScreenState extends State<HomeScreen> {
     if (confirmed ?? false) await _connection.regenerateId();
   }
 
+  Future<void> _showSettings() async {
+    final background = widget.background!;
+    await showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      builder: (context) => SafeArea(
+        child: ListenableBuilder(
+          listenable: background,
+          builder: (context, _) => Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              SwitchListTile(
+                key: const Key('background-switch'),
+                secondary: const Icon(Icons.notifications_active_outlined),
+                title: const Text('Rester joignable en arrière-plan'),
+                subtitle: const Text(
+                  'Démarre avec le téléphone et garde Dismessage connecté, '
+                  'même fermé, pour être prévenu des messages et des '
+                  'demandes. Une notification discrète l’indique.',
+                ),
+                value: background.enabled,
+                onChanged: background.setEnabled,
+              ),
+              const SizedBox(height: 8),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   Future<void> _editServer() async {
     final uri = await showDialog<Uri>(
       context: context,
@@ -255,6 +291,13 @@ class _HomeScreenState extends State<HomeScreen> {
             builder: (context, _) => _StatusChip(status: _connection.status),
           ),
           const SizedBox(width: 4),
+          if (widget.background?.supported ?? false)
+            IconButton(
+              key: const Key('settings'),
+              tooltip: 'Réglages',
+              icon: const Icon(Icons.settings_outlined),
+              onPressed: _showSettings,
+            ),
           IconButton(
             key: const Key('server-settings'),
             tooltip: 'Serveur',
