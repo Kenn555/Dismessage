@@ -42,6 +42,11 @@ void main() {
       expect(DismessageId.format('482913075'), '482 913 075');
     });
 
+    test('mask hides the middle group', () {
+      expect(DismessageId.mask('482913075'), '482 *** 075');
+      expect(() => DismessageId.mask('12'), throwsArgumentError);
+    });
+
     test('format rejects invalid IDs', () {
       expect(() => DismessageId.format('123'), throwsArgumentError);
     });

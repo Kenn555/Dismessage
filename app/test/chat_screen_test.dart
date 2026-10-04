@@ -55,6 +55,8 @@ void main() {
 
     expect(contacts.byId(peer)?.name, 'Bob');
     expect(find.text('Bob'), findsOneWidget);
+    // Known by name now: the ID in the header is masked.
+    expect(find.text('318 *** 691 · En direct'), findsOneWidget);
     expect(find.text('Bob ajouté aux contacts.'), findsOneWidget);
   });
 

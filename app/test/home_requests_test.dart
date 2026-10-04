@@ -175,6 +175,10 @@ void main() {
 
       expect(contacts.byId(peer)?.name, 'Bob');
       expect(find.text('Bob'), findsOneWidget);
+      // A saved contact's ID is masked until revealed.
+      expect(find.text('318 *** 691'), findsOneWidget);
+      await tester.tap(find.byKey(const Key('reveal-contact-ids')));
+      await tester.pump();
       expect(find.text('318 343 691'), findsOneWidget);
 
       await tester.tap(find.byKey(const ValueKey('contact-$peer')));
@@ -206,7 +210,7 @@ void main() {
       channel.receive(const IncomingRequestFrame(from: peer));
       await tester.pumpAndSettle();
       expect(
-        find.text('Bob (318 343 691) veut discuter avec vous.'),
+        find.text('Bob (318 *** 691) veut discuter avec vous.'),
         findsOneWidget,
       );
       await tester.tap(find.text('Refuser'));

@@ -56,10 +56,20 @@ void main() {
       ..values[IdentityService.secretKey] = 'secret';
   });
 
-  testWidgets('shows the stored ID formatted', (tester) async {
+  testWidgets('shows the stored ID masked, revealed on demand', (
+    tester,
+  ) async {
     await pumpHome(tester);
-    expect(find.text('482 913 075'), findsOneWidget);
+    expect(find.text('482 *** 075'), findsOneWidget);
+    expect(find.text('482 913 075'), findsNothing);
     expect(find.text('Hors ligne'), findsOneWidget);
+
+    await tester.tap(find.byKey(const Key('reveal-my-id')));
+    await tester.pump();
+    expect(find.text('482 913 075'), findsOneWidget);
+    await tester.tap(find.byKey(const Key('reveal-my-id')));
+    await tester.pump();
+    expect(find.text('482 *** 075'), findsOneWidget);
     await cleanUp(tester);
   });
 
@@ -89,13 +99,13 @@ void main() {
     await tester.pumpAndSettle();
     await tester.tap(find.text('Annuler'));
     await tester.pumpAndSettle();
-    expect(find.text('482 913 075'), findsOneWidget);
+    expect(find.text('482 *** 075'), findsOneWidget);
 
     await tester.tap(find.byKey(const Key('regenerate-id')));
     await tester.pumpAndSettle();
     await tester.tap(find.text('Générer'));
     await tester.pumpAndSettle();
-    expect(find.text('482 913 075'), findsNothing);
+    expect(find.text('482 *** 075'), findsNothing);
     expect(store.values[IdentityService.idKey], isNot('482913075'));
     expect(connection.myId, store.values[IdentityService.idKey]);
     await cleanUp(tester);

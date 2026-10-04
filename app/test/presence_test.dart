@@ -62,7 +62,7 @@ void main() {
     // Unknown until the server answers: no dot, no status.
     expect(find.byKey(const ValueKey('presence-$alice-on')), findsNothing);
     expect(find.byKey(const ValueKey('presence-$alice-off')), findsNothing);
-    expect(status(tester, alice), '318 343 691');
+    expect(status(tester, alice), '318 *** 691');
     await cleanUp(tester);
   });
 
@@ -73,12 +73,12 @@ void main() {
     channel.receive(const PresenceFrame(id: alice, online: true));
     await tester.pump();
     expect(find.byKey(const ValueKey('presence-$alice-on')), findsOneWidget);
-    expect(status(tester, alice), '318 343 691 · En ligne');
+    expect(status(tester, alice), '318 *** 691 · En ligne');
 
     channel.receive(const PresenceFrame(id: alice, online: false));
     await tester.pump();
     expect(find.byKey(const ValueKey('presence-$alice-off')), findsOneWidget);
-    expect(status(tester, alice), '318 343 691 · Hors ligne');
+    expect(status(tester, alice), '318 *** 691 · Hors ligne');
     await cleanUp(tester);
   });
 

@@ -10,6 +10,7 @@ import '../../services/camera_capture.dart';
 import '../../services/chat_session.dart';
 import '../../services/connection_service.dart';
 import '../../services/contacts_service.dart';
+import '../../services/id_privacy.dart';
 import '../../services/image_codec.dart';
 import '../../services/voice_player.dart';
 import '../../services/voice_recorder.dart';
@@ -56,6 +57,7 @@ class ChatScreen extends StatefulWidget {
     this.encodeImage = ImageCodec.encodeInBackground,
     this.createRecorder = platformVoiceRecorder,
     this.createAudioBackend = platformAudioBackend,
+    this.privacy,
   });
 
   final ChatSession session;
@@ -72,6 +74,9 @@ class ChatScreen extends StatefulWidget {
   final ImageEncoderFn encodeImage;
   final VoiceRecorder Function() createRecorder;
   final AudioBackend Function() createAudioBackend;
+
+  /// Which IDs are shown in full (a saved contact's is masked by default).
+  final IdPrivacy? privacy;
 
   @override
   State<ChatScreen> createState() => _ChatScreenState();
@@ -101,6 +106,7 @@ class _ChatScreenState extends State<ChatScreen> {
   Timer? _recordTicker;
 
   ChatSession get _session => widget.session;
+  late final IdPrivacy _privacy = widget.privacy ?? IdPrivacy();
 
   @override
   void initState() {
@@ -441,10 +447,14 @@ class _ChatScreenState extends State<ChatScreen> {
       appBar: AppBar(
         titleSpacing: 0,
         title: ListenableBuilder(
-          listenable: Listenable.merge([widget.contacts, _session]),
+          listenable: Listenable.merge([widget.contacts, _session, _privacy]),
           builder: (context, _) {
             final contact = widget.contacts.byId(_session.peer);
             final id = DismessageId.format(_session.peer);
+            // A saved contact is known by name: its ID can stay masked.
+            final shownId = contact == null
+                ? id
+                : _privacy.contact(_session.peer);
             final live = !_session.peerLeft;
             return Row(
               children: [
@@ -480,7 +490,7 @@ class _ChatScreenState extends State<ChatScreen> {
                           Flexible(
                             child: Text(
                               [
-                                if (contact != null) id,
+                                if (contact != null) shownId,
                                 live ? 'En direct' : 'Déconnecté',
                               ].join(' · '),
                               overflow: TextOverflow.ellipsis,

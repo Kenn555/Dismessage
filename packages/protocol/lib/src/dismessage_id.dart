@@ -40,4 +40,13 @@ abstract final class DismessageId {
     }
     return '${id.substring(0, 3)} ${id.substring(3, 6)} ${id.substring(6)}';
   }
+
+  /// Formats a normalized ID with its middle group hidden: "482 *** 075".
+  /// Enough to tell IDs apart, not to reach someone.
+  static String mask(String id) {
+    if (!isValid(id)) {
+      throw ArgumentError.value(id, 'id', 'Not a valid Dismessage ID');
+    }
+    return '${id.substring(0, 3)} *** ${id.substring(6)}';
+  }
 }

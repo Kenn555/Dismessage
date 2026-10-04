@@ -7,6 +7,7 @@ import 'package:flutter/services.dart';
 import '../../config.dart';
 import '../../services/connection_service.dart';
 import '../../services/contacts_service.dart';
+import '../../services/id_privacy.dart';
 import '../../theme/app_theme.dart';
 import '../../widgets/contact_avatar.dart';
 import '../../widgets/contact_dialog.dart';
@@ -19,11 +20,15 @@ class HomeScreen extends StatefulWidget {
     required this.connection,
     required this.settings,
     required this.contacts,
+    this.privacy,
   });
 
   final ConnectionService connection;
   final ServerSettings settings;
   final ContactsService contacts;
+
+  /// Which IDs are shown in full (masked by default).
+  final IdPrivacy? privacy;
 
   @override
   State<HomeScreen> createState() => _HomeScreenState();
@@ -39,6 +44,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
   ConnectionService get _connection => widget.connection;
   ContactsService get _contacts => widget.contacts;
+  late final IdPrivacy _privacy = widget.privacy ?? IdPrivacy();
 
   /// Contact name when saved, formatted ID otherwise.
   String _label(String id) => _contacts.label(id);
@@ -76,6 +82,7 @@ class _HomeScreenState extends State<HomeScreen> {
               session: session,
               connection: _connection,
               contacts: _contacts,
+              privacy: _privacy,
             ),
           ),
         );
@@ -111,7 +118,7 @@ class _HomeScreenState extends State<HomeScreen> {
           content: Text(
             _contacts.byId(from) == null
                 ? '${DismessageId.format(from)} veut discuter avec vous.'
-                : '${_label(from)} (${DismessageId.format(from)}) '
+                : '${_label(from)} (${_privacy.contact(from)}) '
                       'veut discuter avec vous.',
           ),
           actions: [
@@ -268,9 +275,10 @@ class _HomeScreenState extends State<HomeScreen> {
                         _ConnectionBanner(connection: _connection),
                   ),
                   ListenableBuilder(
-                    listenable: _connection,
+                    listenable: Listenable.merge([_connection, _privacy]),
                     builder: (context, _) => _IdCard(
                       id: _connection.myId,
+                      privacy: _privacy,
                       onCopy: _copyId,
                       onRegenerate: _regenerate,
                     ),
@@ -361,6 +369,21 @@ class _HomeScreenState extends State<HomeScreen> {
                           subtitle: 'Sur cet appareil uniquement.',
                         ),
                       ),
+                      ListenableBuilder(
+                        listenable: _privacy,
+                        builder: (context, _) => IconButton(
+                          key: const Key('reveal-contact-ids'),
+                          tooltip: _privacy.showContacts
+                              ? 'Masquer les ID'
+                              : 'Afficher les ID',
+                          icon: Icon(
+                            _privacy.showContacts
+                                ? Icons.visibility_off_outlined
+                                : Icons.visibility_outlined,
+                          ),
+                          onPressed: _privacy.toggleContacts,
+                        ),
+                      ),
                       TextButton.icon(
                         key: const Key('add-contact'),
                         icon: const Icon(Icons.person_add_alt_1_rounded),
@@ -371,9 +394,14 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                   const SizedBox(height: 12),
                   ListenableBuilder(
-                    listenable: Listenable.merge([_contacts, _connection]),
+                    listenable: Listenable.merge([
+                      _contacts,
+                      _connection,
+                      _privacy,
+                    ]),
                     builder: (context, _) => _ContactList(
                       contacts: _contacts.contacts,
+                      displayId: _privacy.contact,
                       isOnline: _connection.isOnline,
                       canConnect:
                           _connection.status == ServerStatus.online &&
@@ -397,11 +425,13 @@ class _HomeScreenState extends State<HomeScreen> {
 class _IdCard extends StatelessWidget {
   const _IdCard({
     required this.id,
+    required this.privacy,
     required this.onCopy,
     required this.onRegenerate,
   });
 
   final String? id;
+  final IdPrivacy privacy;
   final void Function(String formatted) onCopy;
   final VoidCallback onRegenerate;
 
@@ -409,7 +439,9 @@ class _IdCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final text = Theme.of(context).textTheme;
     final id = this.id;
+    // Copy always gives the full ID; the display may be masked.
     final formatted = id == null ? '— — —' : DismessageId.format(id);
+    final shown = id == null ? formatted : privacy.mine(id);
     const onBrand = Colors.white;
     final muted = Colors.white.withValues(alpha: 0.78);
     return DecoratedBox(
@@ -439,14 +471,32 @@ class _IdCard extends StatelessWidget {
               ),
             ),
             const SizedBox(height: 6),
-            SelectableText(
-              formatted,
-              key: const Key('my-id'),
-              style: text.displaySmall?.copyWith(
-                color: onBrand,
-                fontFeatures: const [FontFeature.tabularFigures()],
-                letterSpacing: 2,
-              ),
+            Row(
+              children: [
+                Flexible(
+                  child: SelectableText(
+                    shown,
+                    key: const Key('my-id'),
+                    style: text.displaySmall?.copyWith(
+                      color: onBrand,
+                      fontFeatures: const [FontFeature.tabularFigures()],
+                      letterSpacing: 2,
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 4),
+                IconButton(
+                  key: const Key('reveal-my-id'),
+                  tooltip: privacy.showMine ? 'Masquer l’ID' : 'Afficher l’ID',
+                  color: onBrand,
+                  icon: Icon(
+                    privacy.showMine
+                        ? Icons.visibility_off_outlined
+                        : Icons.visibility_outlined,
+                  ),
+                  onPressed: id == null ? null : privacy.toggleMine,
+                ),
+              ],
             ),
             const SizedBox(height: 4),
             Text(
@@ -516,6 +566,7 @@ class _SectionTitle extends StatelessWidget {
 class _ContactList extends StatelessWidget {
   const _ContactList({
     required this.contacts,
+    required this.displayId,
     required this.isOnline,
     required this.canConnect,
     required this.onConnect,
@@ -524,6 +575,9 @@ class _ContactList extends StatelessWidget {
   });
 
   final List<Contact> contacts;
+
+  /// A contact's ID as displayed (masked unless revealed).
+  final String Function(String id) displayId;
 
   /// Presence of a contact; null while unknown.
   final bool? Function(String id) isOnline;
@@ -579,7 +633,7 @@ class _ContactList extends StatelessWidget {
               title: Text(contact.name, style: theme.textTheme.titleMedium),
               subtitle: Text(
                 [
-                  DismessageId.format(contact.id),
+                  displayId(contact.id),
                   switch (isOnline(contact.id)) {
                     true => 'En ligne',
                     false => 'Hors ligne',
