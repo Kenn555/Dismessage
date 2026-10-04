@@ -26,8 +26,9 @@ void check(bool ok, String what) {
 Future<void> waitFor(bool Function() condition, String reason) async {
   final deadline = DateTime.now().add(const Duration(seconds: 10));
   while (!condition()) {
-    if (DateTime.now().isAfter(deadline))
+    if (DateTime.now().isAfter(deadline)) {
       throw StateError('Timed out: $reason');
+    }
     await Future<void>.delayed(const Duration(milliseconds: 20));
   }
 }
