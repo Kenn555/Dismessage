@@ -43,12 +43,12 @@ Future<String> _powershell(String script) async {
   return '${result.stdout}';
 }
 
-/// Dismessage's toasts as Windows keeps them: "tag|reply" per line, reply
-/// telling whether the toast has a reply field. (Windows does not give back
+/// Dismessage's toasts as Windows keeps them: "tag|reply|buttons" per line,
+/// telling whether the toast has a reply field and buttons. (Windows does not give back
 /// the bound title and body: those are checked by chat_notifications_test.)
 Future<List<String>> toastHistory() async => (await _powershell(r'''
 $h = [Windows.UI.Notifications.ToastNotificationManager]::History.GetHistory('Dismessage.Desktop')
-foreach ($t in $h) { $t.Tag + '|' + ($t.Content.GetXml() -match 'input id="reply"') }
+foreach ($t in $h) { $x = $t.Content.GetXml(); $t.Tag + '|' + ($x -match 'input id="reply"') + '|' + ($x -match 'arguments="button:') }
 ''')).split('\n').map((l) => l.trim()).where((l) => l.isNotEmpty).toList();
 
 Future<void> clearToasts() => _powershell(
@@ -106,7 +106,7 @@ Future<void> main() async {
     await Future<void>.delayed(const Duration(milliseconds: 500));
     var history = await toastHistory();
     check(
-      history.join() == '$sid|True',
+      history.join() == '$sid|True|False',
       'la frappe est annoncée, avec un champ de réponse ($history)',
     );
 
@@ -114,7 +114,7 @@ Future<void> main() async {
     await Future<void>.delayed(const Duration(milliseconds: 700));
     history = await toastHistory();
     check(
-      history.join() == '$sid|True',
+      history.join() == '$sid|True|False',
       'mise à jour sur place : toujours un seul toast ($history)',
     );
 
@@ -122,7 +122,7 @@ Future<void> main() async {
     await waitFor(() => me.session!.messages.isNotEmpty, 'message');
     await Future<void>.delayed(const Duration(milliseconds: 500));
     history = await toastHistory();
-    check(history.join() == '$sid|True', 'le message remplace la frappe');
+    check(history.join() == '$sid|True|False', 'le message remplace la frappe');
 
     notifications.appVisible = true;
     await Future<void>.delayed(const Duration(milliseconds: 500));
@@ -135,6 +135,34 @@ Future<void> main() async {
     notifications.onReply(sid, 'Oui !');
     await waitFor(() => peer.session!.messages.length == 1, 'reply');
     check(true, 'la réponse depuis le toast est envoyée');
+
+    // A request while the app is hidden: a toast with Accept / Refuse.
+    await clearToasts();
+    final requester = ConnectionService(
+      identity: IdentityService(MemoryStore()),
+      serverUri: uri,
+    );
+    try {
+      await requester.start();
+      await waitFor(
+        () => requester.status == ServerStatus.online,
+        'requester online',
+      );
+      requester.requestChat(me.myId!);
+      final tag = 'request-${requester.myId}';
+      await Future<void>.delayed(const Duration(milliseconds: 600));
+      history = await toastHistory();
+      check(
+        history.join() == '$tag|False|True',
+        'une demande est notifiée avec « Accepter » / « Refuser » ($history)',
+      );
+      requester.cancelRequest();
+      await Future<void>.delayed(const Duration(milliseconds: 600));
+      history = await toastHistory();
+      check(history.isEmpty, 'une demande retirée disparaît ($history)');
+    } finally {
+      requester.dispose();
+    }
   } catch (e) {
     check(false, 'exception : $e');
   } finally {

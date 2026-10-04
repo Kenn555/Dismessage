@@ -23,6 +23,8 @@ class ChannelNotifier implements SystemNotifier {
           callbacks.onReply(tag, args['text'] as String? ?? '');
         case 'onOpen':
           callbacks.onOpen(tag);
+        case 'onAction':
+          callbacks.onAction(tag, args['action'] as String? ?? '');
       }
     });
   }
@@ -49,6 +51,14 @@ class ChannelNotifier implements SystemNotifier {
     'lines': notice.lines,
     'alert': notice.alert,
     'reply': notice.canReply,
+    'actions': [
+      for (final action in notice.actions)
+        {
+          'id': action.id,
+          'label': action.label,
+          'foreground': action.foreground,
+        },
+    ],
   });
 
   @override

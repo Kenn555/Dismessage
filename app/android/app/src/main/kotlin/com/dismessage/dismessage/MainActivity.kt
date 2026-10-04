@@ -22,8 +22,12 @@ class MainActivity : FlutterActivity() {
     /** A notification was tapped while the app was running. */
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
-        intent.getStringExtra(NotificationHandler.EXTRA_TAG)?.let {
-            notifications?.onOpened(it)
+        val tag = intent.getStringExtra(NotificationHandler.EXTRA_TAG) ?: return
+        val action = intent.getStringExtra(NotificationHandler.EXTRA_ACTION)
+        if (action != null) {
+            notifications?.onAction(tag, action)
+        } else {
+            notifications?.onOpened(tag)
         }
     }
 

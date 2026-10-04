@@ -8,6 +8,7 @@
 #include <winrt/Windows.UI.Notifications.h>
 
 #include <optional>
+#include <vector>
 
 namespace {
 
@@ -22,6 +23,16 @@ constexpr const wchar_t kGroup[] = L"chat";
 struct ToastAction {
   std::string tag;
   std::optional<std::string> reply;
+  // A button ("accept", "reject"…), and whether it brings the window up.
+  std::optional<std::string> button;
+  bool foreground = true;
+};
+
+// A notification button, as sent by Dart.
+struct ToastButton {
+  std::wstring id;
+  std::wstring label;
+  bool foreground = false;
 };
 
 std::wstring Widen(const std::string& text) {
@@ -64,18 +75,26 @@ std::optional<T> Arg(const EncodableMap& args, const char* key) {
 
 // Title and body are bound ({title}, {body}) so a typing update can change
 // them in place, without popping the toast up again.
-std::wstring ToastXml(bool alert, bool reply) {
+std::wstring ToastXml(bool alert, bool reply,
+                      const std::vector<ToastButton>& buttons) {
   std::wstring xml =
       L"<toast launch=\"open\">"
       L"<visual><binding template=\"ToastGeneric\">"
       L"<text>{title}</text><text>{body}</text>"
       L"</binding></visual>";
-  if (reply) {
-    xml +=
-        L"<actions>"
-        L"<input id=\"reply\" type=\"text\" placeHolderContent=\"Répondre…\"/>"
-        L"<action content=\"Envoyer\" arguments=\"reply\" hint-inputId=\"reply\"/>"
-        L"</actions>";
+  if (reply || !buttons.empty()) {
+    xml += L"<actions>";
+    if (reply) {
+      xml +=
+          L"<input id=\"reply\" type=\"text\" placeHolderContent=\"Répondre…\"/>"
+          L"<action content=\"Envoyer\" arguments=\"reply\" hint-inputId=\"reply\"/>";
+    }
+    // Labels and ids come from the app itself (no markup to escape).
+    for (const auto& button : buttons) {
+      xml += L"<action content=\"" + button.label + L"\" arguments=\"button:" +
+             (button.foreground ? L"1:" : L"0:") + button.id + L"\"/>";
+    }
+    xml += L"</actions>";
   }
   xml += alert ? L"<audio src=\"ms-winsoundevent:Notification.IM\"/>"
                : L"<audio silent=\"true\"/>";
@@ -131,11 +150,22 @@ struct Notifications::Impl {
         result->Success(EncodableValue(Notifier().Setting() ==
                                        notif::NotificationSetting::Enabled));
       } else if (call.method_name() == "show" && args) {
+        std::vector<ToastButton> buttons;
+        if (auto list = Arg<flutter::EncodableList>(*args, "actions")) {
+          for (const auto& item : *list) {
+            const auto* map = std::get_if<EncodableMap>(&item);
+            if (!map) continue;
+            buttons.push_back(
+                {Widen(Arg<std::string>(*map, "id").value_or("")),
+                 Widen(Arg<std::string>(*map, "label").value_or("")),
+                 Arg<bool>(*map, "foreground").value_or(false)});
+          }
+        }
         Show(Widen(Arg<std::string>(*args, "tag").value_or("")),
              Widen(Arg<std::string>(*args, "title").value_or("")),
              Widen(Arg<std::string>(*args, "body").value_or("")),
              Arg<bool>(*args, "alert").value_or(true),
-             Arg<bool>(*args, "reply").value_or(false));
+             Arg<bool>(*args, "reply").value_or(false), buttons);
         result->Success();
       } else if (call.method_name() == "cancel" && args) {
         Cancel(Widen(Arg<std::string>(*args, "tag").value_or("")));
@@ -149,7 +179,8 @@ struct Notifications::Impl {
   }
 
   void Show(const std::wstring& tag, const std::wstring& title,
-            const std::wstring& body, bool alert, bool reply) {
+            const std::wstring& body, bool alert, bool reply,
+            const std::vector<ToastButton>& buttons) {
     notif::NotificationData data;
     data.Values().Insert(L"title", title);
     data.Values().Insert(L"body", body);
@@ -163,7 +194,7 @@ struct Notifications::Impl {
     }
 
     winrt::Windows::Data::Xml::Dom::XmlDocument xml;
-    xml.LoadXml(ToastXml(alert, reply));
+    xml.LoadXml(ToastXml(alert, reply, buttons));
     notif::ToastNotification toast(xml);
     toast.Tag(tag);
     toast.Group(kGroup);
@@ -178,7 +209,13 @@ struct Notifications::Impl {
       auto action = std::make_unique<ToastAction>();
       action->tag = narrow_tag;
       if (auto activated = args.try_as<notif::ToastActivatedEventArgs>()) {
-        if (activated.Arguments() == L"reply") {
+        const std::wstring arguments(activated.Arguments());
+        // "button:<1|0>:<id>", 1 when the button brings the window up.
+        if (arguments.rfind(L"button:", 0) == 0 && arguments.size() > 9) {
+          action->foreground = arguments[7] == L'1';
+          action->button = Narrow(arguments.substr(9));
+        }
+        if (arguments == L"reply") {
           const auto input = activated.UserInput();
           if (input && input.HasKey(L"reply")) {
             action->reply = Narrow(std::wstring(
@@ -244,7 +281,12 @@ bool Notifications::HandleWindowMessage(UINT message, LPARAM lparam) {
   if (message != kToastActivated) return false;
   std::unique_ptr<ToastAction> action(reinterpret_cast<ToastAction*>(lparam));
   EncodableMap args{{EncodableValue("tag"), EncodableValue(action->tag)}};
-  if (action->reply && !action->reply->empty()) {
+  if (action->button) {
+    args[EncodableValue("action")] = EncodableValue(*action->button);
+    if (action->foreground) impl_->BringToFront();
+    impl_->channel->InvokeMethod("onAction",
+                                 std::make_unique<EncodableValue>(args));
+  } else if (action->reply && !action->reply->empty()) {
     args[EncodableValue("text")] = EncodableValue(*action->reply);
     impl_->channel->InvokeMethod("onReply",
                                  std::make_unique<EncodableValue>(args));

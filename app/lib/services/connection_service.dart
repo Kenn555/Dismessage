@@ -40,6 +40,13 @@ class RequestTimedOutEvent extends ConnectionEvent {
   final String peer;
 }
 
+/// The request of [from] was answered (from its dialog or a notification):
+/// close what still shows it.
+class IncomingRequestAnsweredEvent extends ConnectionEvent {
+  const IncomingRequestAnsweredEvent(this.from);
+  final String from;
+}
+
 /// [from] withdrew the request they sent us (close the dialog).
 class RequestCancelledEvent extends ConnectionEvent {
   const RequestCancelledEvent(this.from);
@@ -175,9 +182,15 @@ class ConnectionService extends ChangeNotifier {
     if (!_disposed) notifyListeners();
   }
 
-  void accept(String from) => _send(ConnectAcceptFrame(from: from));
+  void accept(String from) {
+    _send(ConnectAcceptFrame(from: from));
+    _events.add(IncomingRequestAnsweredEvent(from));
+  }
 
-  void reject(String from) => _send(ConnectRejectFrame(peer: from));
+  void reject(String from) {
+    _send(ConnectRejectFrame(peer: from));
+    _events.add(IncomingRequestAnsweredEvent(from));
+  }
 
   /// Leaves the current conversation (the peer is notified).
   void leaveSession() {

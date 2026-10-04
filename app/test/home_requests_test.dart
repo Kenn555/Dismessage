@@ -152,6 +152,22 @@ void main() {
     await cleanUp(tester);
   });
 
+  testWidgets('answering from a notification closes the dialog', (
+    tester,
+  ) async {
+    await pumpHome(tester);
+    channel.receive(const IncomingRequestFrame(from: peer));
+    await tester.pumpAndSettle();
+    expect(find.text('Demande de conversation'), findsOneWidget);
+
+    // As the notification's « Refuser » button does.
+    connection.reject(peer);
+    await tester.pumpAndSettle();
+    expect(find.text('Demande de conversation'), findsNothing);
+    expect(channel.sink.sent.whereType<ConnectRejectFrame>(), hasLength(1));
+    await cleanUp(tester);
+  });
+
   group('contacts', () {
     testWidgets('empty list explains what contacts are for', (tester) async {
       await pumpHome(tester);

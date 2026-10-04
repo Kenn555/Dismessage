@@ -24,12 +24,17 @@ void ActivateRunningInstance() {
 
 int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
                       _In_ wchar_t *command_line, _In_ int show_command) {
-  HANDLE instance_mutex = ::CreateMutex(nullptr, TRUE, kInstanceMutex);
+  HANDLE instance_mutex = nullptr;
+#ifdef NDEBUG
+  // Release only: a development build ("flutter run") may run next to the
+  // installed app.
+  instance_mutex = ::CreateMutex(nullptr, TRUE, kInstanceMutex);
   if (instance_mutex != nullptr && ::GetLastError() == ERROR_ALREADY_EXISTS) {
     ActivateRunningInstance();
     ::CloseHandle(instance_mutex);
     return EXIT_SUCCESS;
   }
+#endif
   RegisterAppUserModelId();
   // "--minimized": launched at Windows startup, stay in the taskbar.
   const bool start_minimized =

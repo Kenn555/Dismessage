@@ -2,7 +2,17 @@ import 'system_notifier_io.dart'
     if (dart.library.js_interop) 'system_notifier_web.dart'
     as platform;
 
-/// One conversation's notification, replaced as it changes.
+/// A button of a notification (e.g. « Accepter »).
+class NoticeAction {
+  const NoticeAction(this.id, this.label, {this.foreground = false});
+  final String id;
+  final String label;
+
+  /// Also brings the app to the front (e.g. accepting opens the chat).
+  final bool foreground;
+}
+
+/// One notification (a conversation, or a request), replaced as it changes.
 class ChatNotice {
   const ChatNotice({
     required this.tag,
@@ -10,9 +20,11 @@ class ChatNotice {
     required this.lines,
     required this.alert,
     required this.canReply,
+    this.actions = const [],
   });
 
-  /// Identifies the notification to replace (the session id).
+  /// Identifies the notification to replace (the session id, or the
+  /// requester for a request).
   final String tag;
 
   /// Contact name or formatted ID.
@@ -27,6 +39,9 @@ class ChatNotice {
   /// Offer a reply field (where the platform has one).
   final bool canReply;
 
+  /// Buttons (where the platform has them).
+  final List<NoticeAction> actions;
+
   String get body => lines.join('\n');
 }
 
@@ -37,6 +52,9 @@ abstract class NotifierCallbacks {
 
   /// Notification tapped: the app is brought to the front.
   void onOpen(String tag);
+
+  /// One of the notification's buttons was pressed.
+  void onAction(String tag, String action);
 }
 
 /// System notifications of the current platform.
@@ -47,7 +65,8 @@ abstract class SystemNotifier {
   /// Asks for the right to notify (Android 13+, browsers). True if granted.
   Future<bool> requestPermission();
 
-  /// Whether this platform shows a reply field in notifications.
+  /// Whether this platform shows a reply field and buttons in
+  /// notifications.
   bool get supportsReply;
 
   Future<void> show(ChatNotice notice);

@@ -24,7 +24,10 @@ class ChatNotifications implements NotifierCallbacks {
        _typingDelay = typingDelay {
     _notifier.listen(this);
     _connection.addListener(_onConnection);
+    _events = _connection.events.listen(_onEvent);
     _onConnection();
+    // Asked at startup: a request can come before any conversation.
+    _notifier.requestPermission();
   }
 
   final ConnectionService _connection;
@@ -32,9 +35,12 @@ class ChatNotifications implements NotifierCallbacks {
   final SystemNotifier _notifier;
   final Duration _typingDelay;
 
+  late final StreamSubscription<ConnectionEvent> _events;
   ChatSession? _session;
   bool _visible = true;
-  bool _permissionAsked = false;
+
+  /// Requesters whose request is notified.
+  final Set<String> _requests = {};
 
   /// Bubbles of the session already accounted for.
   int _seen = 0;
@@ -58,7 +64,45 @@ class ChatNotifications implements NotifierCallbacks {
     if (visible) {
       _clear();
       if (session != null) _seen = session.messages.length;
+      // The request dialogs are on screen now.
+      for (final from in _requests.toList()) {
+        _cancelRequest(from);
+      }
     }
+  }
+
+  static const _requestPrefix = 'request-';
+
+  void _onEvent(ConnectionEvent event) {
+    switch (event) {
+      case IncomingRequestEvent(:final from):
+        if (_visible) return;
+        _requests.add(from);
+        _notifier.show(
+          ChatNotice(
+            tag: '$_requestPrefix$from',
+            title: 'Demande de conversation',
+            // A contact by name; an unknown person by full ID.
+            lines: ['${_contacts.label(from)} veut discuter avec vous.'],
+            alert: true,
+            canReply: false,
+            actions: const [
+              NoticeAction('accept', 'Accepter', foreground: true),
+              NoticeAction('reject', 'Refuser'),
+            ],
+          ),
+        );
+      case RequestCancelledEvent(:final from):
+        _cancelRequest(from);
+      case IncomingRequestAnsweredEvent(:final from):
+        _cancelRequest(from);
+      default:
+        break;
+    }
+  }
+
+  void _cancelRequest(String from) {
+    if (_requests.remove(from)) _notifier.cancel('$_requestPrefix$from');
   }
 
   void _onConnection() {
@@ -70,10 +114,6 @@ class ChatNotifications implements NotifierCallbacks {
     if (session == null) return;
     _seen = session.messages.length;
     session.addListener(_onSession);
-    if (!_permissionAsked) {
-      _permissionAsked = true;
-      _notifier.requestPermission();
-    }
   }
 
   void _onSession() {
@@ -189,7 +229,23 @@ class ChatNotifications implements NotifierCallbacks {
   }
 
   @override
-  void onOpen(String tag) => _clear();
+  void onOpen(String tag) {
+    if (tag.startsWith(_requestPrefix)) return;
+    _clear();
+  }
+
+  @override
+  void onAction(String tag, String action) {
+    if (!tag.startsWith(_requestPrefix)) return;
+    final from = tag.substring(_requestPrefix.length);
+    switch (action) {
+      case 'accept':
+        _connection.accept(from);
+      case 'reject':
+        _connection.reject(from);
+    }
+    // The answered event removes the notification.
+  }
 
   void _cancel() {
     final session = _session;
@@ -208,6 +264,7 @@ class ChatNotifications implements NotifierCallbacks {
   }
 
   void dispose() {
+    _events.cancel();
     _clear();
     _session?.removeListener(_onSession);
     _connection.removeListener(_onConnection);

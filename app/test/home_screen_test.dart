@@ -56,9 +56,7 @@ void main() {
       ..values[IdentityService.secretKey] = 'secret';
   });
 
-  testWidgets('shows the stored ID masked, revealed on demand', (
-    tester,
-  ) async {
+  testWidgets('shows the stored ID masked, revealed on demand', (tester) async {
     await pumpHome(tester);
     expect(find.text('482 *** 075'), findsOneWidget);
     expect(find.text('482 913 075'), findsNothing);

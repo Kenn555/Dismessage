@@ -98,6 +98,10 @@ class _HomeScreenState extends State<HomeScreen> {
           Navigator.of(dialog).pop();
           _snack('${_label(from)} a annulé sa demande.');
         }
+      case IncomingRequestAnsweredEvent(:final from):
+        // Answered from the notification: the dialog has nothing left to do.
+        final dialog = _incomingDialogs.remove(from);
+        if (dialog != null && dialog.mounted) Navigator.of(dialog).pop();
       case ServerErrorEvent(:final message):
         _snack(message);
     }

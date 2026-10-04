@@ -29,7 +29,9 @@ class NotificationHandler(
         const val CHANNEL_ID = "messages"
         const val REPLY_KEY = "reply"
         const val EXTRA_TAG = "dismessage.tag"
+        const val EXTRA_ACTION = "dismessage.action"
         const val ACTION_REPLY = "com.dismessage.dismessage.REPLY"
+        const val ACTION_BUTTON = "com.dismessage.dismessage.BUTTON"
 
         /** The live handler, for [ReplyReceiver] (null once the app is gone). */
         var current: NotificationHandler? = null
@@ -63,6 +65,8 @@ class NotificationHandler(
                         lines = call.argument<List<String>>("lines") ?: emptyList(),
                         alert = call.argument<Boolean>("alert") ?: true,
                         reply = call.argument<Boolean>("reply") ?: false,
+                        actions = call.argument<List<Map<String, Any?>>>("actions")
+                            ?: emptyList(),
                     )
                     result.success(null)
                 }
@@ -102,7 +106,14 @@ class NotificationHandler(
         pendingPermission = null
     }
 
-    private fun show(tag: String, title: String, lines: List<String>, alert: Boolean, reply: Boolean) {
+    private fun show(
+        tag: String,
+        title: String,
+        lines: List<String>,
+        alert: Boolean,
+        reply: Boolean,
+        actions: List<Map<String, Any?>>,
+    ) {
         val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             Notification.Builder(activity, CHANNEL_ID)
         } else {
@@ -136,7 +147,51 @@ class NotificationHandler(
                 .build()
             builder.addAction(action)
         }
+        // Buttons (e.g. a request's « Accepter » / « Refuser »).
+        for (button in actions) {
+            val id = button["id"] as? String ?: continue
+            val label = button["label"] as? String ?: id
+            val intent = if (button["foreground"] == true) {
+                actionActivityIntent(tag, id)
+            } else {
+                actionBroadcastIntent(tag, id)
+            }
+            builder.addAction(Notification.Action.Builder(null, label, intent).build())
+        }
         manager.notify(tag, 0, builder.build())
+    }
+
+    /** A button that also opens the app (e.g. accepting a request). */
+    private fun actionActivityIntent(tag: String, action: String): PendingIntent {
+        val intent = Intent(activity, MainActivity::class.java)
+            .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)
+            .putExtra(EXTRA_TAG, tag)
+            .putExtra(EXTRA_ACTION, action)
+        return PendingIntent.getActivity(
+            activity,
+            "$tag/$action".hashCode(),
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+    }
+
+    /** A button handled without showing the app (e.g. refusing). */
+    private fun actionBroadcastIntent(tag: String, action: String): PendingIntent {
+        val intent = Intent(activity, ReplyReceiver::class.java)
+            .setAction(ACTION_BUTTON)
+            .putExtra(EXTRA_TAG, tag)
+            .putExtra(EXTRA_ACTION, action)
+        return PendingIntent.getBroadcast(
+            activity,
+            "$tag/$action".hashCode(),
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+    }
+
+    fun onAction(tag: String, action: String) {
+        manager.cancel(tag, 0)
+        channel.invokeMethod("onAction", mapOf("tag" to tag, "action" to action))
     }
 
     private fun openIntent(tag: String): PendingIntent {
@@ -189,6 +244,18 @@ class NotificationHandler(
 class ReplyReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         val tag = intent.getStringExtra(NotificationHandler.EXTRA_TAG) ?: return
+        if (intent.action == NotificationHandler.ACTION_BUTTON) {
+            val action = intent.getStringExtra(NotificationHandler.EXTRA_ACTION) ?: return
+            val handler = NotificationHandler.current
+            if (handler == null) {
+                val manager =
+                    context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+                manager.cancel(tag, 0)
+            } else {
+                handler.onAction(tag, action)
+            }
+            return
+        }
         val text = RemoteInput.getResultsFromIntent(intent)
             ?.getCharSequence(NotificationHandler.REPLY_KEY)
             ?.toString()

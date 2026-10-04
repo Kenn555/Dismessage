@@ -213,4 +213,78 @@ void main() {
     await message('Coucou');
     expect(notifier.shown.single.title, '318 343 691');
   });
+
+  group('requests', () {
+    const stranger = '555666777';
+
+    Future<void> request(String from) async {
+      channel.receive(IncomingRequestFrame(from: from));
+      await pumpEventQueue();
+    }
+
+    test('a hidden request is notified with Accept / Refuse', () async {
+      notifications.appVisible = false;
+      await request(stranger);
+      final notice = notifier.shown.single;
+      expect(notice.tag, 'request-$stranger');
+      expect(notice.title, 'Demande de conversation');
+      // An unknown person: the full ID, to know who it is.
+      expect(notice.lines, ['555 666 777 veut discuter avec vous.']);
+      expect(notice.alert, isTrue);
+      expect(notice.actions.map((a) => (a.id, a.label, a.foreground)), [
+        ('accept', 'Accepter', true),
+        ('reject', 'Refuser', false),
+      ]);
+    });
+
+    test('a saved contact is named', () async {
+      notifications.appVisible = false;
+      await request(peer);
+      expect(notifier.shown.single.lines, ['Alice veut discuter avec vous.']);
+    });
+
+    test('nothing while the app is visible (the dialog shows)', () async {
+      await request(stranger);
+      expect(notifier.shown, isEmpty);
+    });
+
+    test('accepting from the notification answers and removes it', () async {
+      notifications.appVisible = false;
+      await request(stranger);
+      notifier.callbacks!.onAction('request-$stranger', 'accept');
+      await pumpEventQueue();
+      expect(
+        channel.sink.sent.whereType<ConnectAcceptFrame>().single.from,
+        stranger,
+      );
+      expect(notifier.cancelled, ['request-$stranger']);
+    });
+
+    test('refusing from the notification answers and removes it', () async {
+      notifications.appVisible = false;
+      await request(stranger);
+      notifier.callbacks!.onAction('request-$stranger', 'reject');
+      await pumpEventQueue();
+      expect(
+        channel.sink.sent.whereType<ConnectRejectFrame>().single.peer,
+        stranger,
+      );
+      expect(notifier.cancelled, ['request-$stranger']);
+    });
+
+    test('a withdrawn request is removed', () async {
+      notifications.appVisible = false;
+      await request(stranger);
+      channel.receive(const ConnectCancelFrame(peer: stranger));
+      await pumpEventQueue();
+      expect(notifier.cancelled, ['request-$stranger']);
+    });
+
+    test('coming back to the app removes it (the dialog takes over)', () async {
+      notifications.appVisible = false;
+      await request(stranger);
+      notifications.appVisible = true;
+      expect(notifier.cancelled, contains('request-$stranger'));
+    });
+  });
 }
