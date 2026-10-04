@@ -39,6 +39,10 @@ class Win32Window {
   // Show the current window. Returns true if the window was successfully shown.
   bool Show();
 
+  // Show the window minimized, without taking the focus (launch at
+  // Windows startup).
+  void SetStartMinimized(bool minimized) { start_minimized_ = minimized; }
+
   // Release OS resources associated with window.
   void Destroy();
 
@@ -91,6 +95,8 @@ class Win32Window {
   static void UpdateTheme(HWND const window);
 
   bool quit_on_close_ = false;
+
+  bool start_minimized_ = false;
 
   // window handle for top level window.
   HWND window_handle_ = nullptr;

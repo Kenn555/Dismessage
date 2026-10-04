@@ -70,6 +70,10 @@ cd app && flutter run -d <android> --dart-define=SERVER_URL=ws://10.0.2.2:8080
 | Relais | Render (Web Service, offre Free) : `https://dismessage.onrender.com` | `Dockerfile` à la racine, déploiement automatique à chaque push sur `main`. Health check : `/health` |
 | Client web | GitHub Pages | `.github/workflows/pages.yml` (tests + `flutter build web --base-href /<dépôt>/`) |
 | APK / EXE | `dist/` (local) | `cd app/android && ./gradlew.bat assembleRelease --offline` / `flutter build windows --release` |
+| Installateur Windows | `dist/Dismessage-Setup.exe` | Double-cliquer sur `build-installer.bat` (compile l'appli puis `installer/dismessage.iss`, Inno Setup 6 installé dans `%LOCALAPPDATA%\Programs\Inno Setup 6`) |
+
+- **Installateur :** assistant en français, sans droits administrateur (ou « pour tous les utilisateurs »), raccourcis menu Démarrer et Bureau, entrée dans Paramètres > Applications, option « Lancer Dismessage au démarrage de Windows » (clé `HKCU\…\Run`, avec `--minimized`), runtime Visual C++ copié à côté de l'appli. Ne jamais changer l'`AppId` du script : c'est lui qui fait qu'une nouvelle version remplace l'ancienne. La version vient de `app/pubspec.yaml`. Non signé : SmartScreen affiche « Éditeur inconnu ».
+- **Appli Windows :** une seule instance par session (mutex nommé ; relancer ramène la fenêtre existante, car deux copies se disputeraient le même ID) ; `--minimized` ouvre la fenêtre réduite sans prendre le focus (`windows/runner/main.cpp`).
 
 - **Serveur par défaut :** `kProductionServer` dans `app/lib/config.dart`, utilisé par les versions release et par le web sur `*.github.io` (`chooseServerUri`, testé dans `config_test.dart`). Les versions debug visent un relais local.
 - **Limites de Render Free :** mise en veille après environ 15 min d'inactivité (premier réveil de 30 à 60 s), et pas de disque persistant. `ids.json` est perdu au redémarrage, et chaque client réenregistre son ID avec son secret.
