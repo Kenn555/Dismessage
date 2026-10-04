@@ -44,6 +44,9 @@ goto web_ok
 :build_web
 echo [1/3] Compilation du client web...
 pushd "%ROOT%app"
+rem Flutter garde parfois une liste de plugins web perimee dans ce cache
+rem (images, micro et audio absents : MissingPluginException). On la jette.
+if exist ".dart_tool\flutter_build" rmdir /s /q ".dart_tool\flutter_build"
 call flutter build web --release
 if errorlevel 1 (popd & echo [ERREUR] Compilation web echouee. & goto fail)
 popd
