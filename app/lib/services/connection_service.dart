@@ -88,6 +88,8 @@ class ConnectionService extends ChangeNotifier {
   ServerStatus _status = ServerStatus.offline;
   bool _disposed = false;
   Uri _serverUri;
+  Set<String> _watched = {};
+  final Map<String, bool> _presence = {};
 
   /// Incremented on every server change, to drop stale connection attempts.
   int _generation = 0;
@@ -116,6 +118,23 @@ class ConnectionService extends ChangeNotifier {
 
   /// ID we are waiting an answer from, if any.
   String? get pendingRequest => _pendingRequest;
+
+  /// Whether [id] is connected to the relay; null while unknown (not
+  /// watched, or we are offline ourselves).
+  bool? isOnline(String id) => _presence[id];
+
+  /// Follows the presence of [ids] (the contacts), replacing the previous
+  /// list. Sent again after every reconnection.
+  void watchPresence(Iterable<String> ids) {
+    final next = ids.take(kMaxPresenceWatch).toSet();
+    if (setEquals(next, _watched)) return;
+    _watched = next;
+    _presence.removeWhere((id, _) => !next.contains(id));
+    if (_status == ServerStatus.online) _sendWatch();
+    notifyListeners();
+  }
+
+  void _sendWatch() => _send(PresenceWatchFrame(ids: _watched.toList()));
 
   Future<void> start() async {
     _me ??= await _identity.load();
@@ -267,7 +286,12 @@ class ConnectionService extends ChangeNotifier {
         _failures = 0;
         _lastError = null;
         _nextRetryAt = null;
+        if (_watched.isNotEmpty) _sendWatch();
         _setStatus(ServerStatus.online);
+      case PresenceFrame(:final id, :final online):
+        if (!_watched.contains(id) || _presence[id] == online) return;
+        _presence[id] = online;
+        notifyListeners();
       case IdTakenFrame(:final id) when id == _me?.id:
         // Someone else owns this ID on the server: pick a new one.
         _me = await _identity.regenerate();
@@ -334,6 +358,8 @@ class ConnectionService extends ChangeNotifier {
   void _setStatus(ServerStatus status) {
     if (_status == status || _disposed) return;
     _status = status;
+    // Presence is only known while we are online ourselves.
+    if (status != ServerStatus.online) _presence.clear();
     notifyListeners();
   }
 

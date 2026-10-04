@@ -1,6 +1,9 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <!-- Required to reach the relay server in release builds. -->
     <uses-permission android:name="android.permission.INTERNET"/>
+    <!-- Voice messages. Photos use the camera app through an intent, so no
+         CAMERA permission (declaring it would make that intent fail). -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO"/>
     <application
         android:label="Dismessage"
         android:name="${applicationName}"

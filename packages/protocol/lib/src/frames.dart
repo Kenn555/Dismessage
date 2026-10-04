@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'constants.dart';
 import 'dismessage_id.dart';
+import 'entry_id.dart';
 import 'text_diff.dart';
 
 /// Thrown when a frame cannot be decoded or fails validation.
@@ -73,6 +74,8 @@ sealed class Frame {
           sid: r.str('sid'),
           seq: r.seq(),
           text: r.text(),
+          mid: r.entryId('mid'),
+          reply: r.optionalEntryId('reply'),
         ),
         'image_offer' => ImageOfferFrame(
           sid: r.str('sid'),
@@ -80,6 +83,7 @@ sealed class Frame {
           width: r.dimension('w'),
           height: r.dimension('h'),
           preview: r.base64('preview', kMaxImagePreviewLength),
+          reply: r.optionalEntryId('reply'),
         ),
         'image_request' => ImageRequestFrame(
           sid: r.str('sid'),
@@ -89,6 +93,24 @@ sealed class Frame {
           sid: r.str('sid'),
           img: r.imageId(),
           data: r.base64('data', kMaxImageDataLength),
+        ),
+        'voice' => VoiceFrame(
+          sid: r.str('sid'),
+          mid: r.entryId('mid'),
+          durationMs: r.durationMs(),
+          mime: r.audioMime(),
+          data: r.base64('data', kMaxVoiceDataLength),
+          reply: r.optionalEntryId('reply'),
+        ),
+        'reaction' => ReactionFrame(
+          sid: r.str('sid'),
+          ref: r.entryId('ref'),
+          emoji: r.emoji(),
+        ),
+        'presence_watch' => PresenceWatchFrame(ids: r.idList('ids')),
+        'presence' => PresenceFrame(
+          id: r.id('id'),
+          online: r.boolean('online'),
         ),
         'error' => ErrorFrame(code: r.str('code'), message: r.str('message')),
         'ping' => const PingFrame(),
@@ -286,18 +308,30 @@ class DraftClearFrame extends RelayedFrame {
   Map<String, Object?> fieldsToJson() => {'sid': sid, 'seq': seq};
 }
 
+/// The draft becomes a definitive message, identified by [mid] (see
+/// [EntryId]). [reply] is the ID of the bubble it answers, if any.
 class MessageCommitFrame extends RelayedFrame {
   const MessageCommitFrame({
     required super.sid,
     required this.seq,
     required this.text,
+    required this.mid,
+    this.reply,
   });
   final int seq;
   final String text;
+  final String mid;
+  final String? reply;
   @override
   String get type => 'message_commit';
   @override
-  Map<String, Object?> fieldsToJson() => {'sid': sid, 'seq': seq, 'text': text};
+  Map<String, Object?> fieldsToJson() => {
+    'sid': sid,
+    'seq': seq,
+    'text': text,
+    'mid': mid,
+    'reply': ?reply,
+  };
 }
 
 /// Sender → receiver: an image is available. Only a tiny, already blurred
@@ -309,11 +343,15 @@ class ImageOfferFrame extends RelayedFrame {
     required this.width,
     required this.height,
     required this.preview,
+    this.reply,
   });
+
+  /// Image ID, also its bubble ID (an [EntryId]).
   final String img;
   final int width;
   final int height;
   final String preview;
+  final String? reply;
   @override
   String get type => 'image_offer';
   @override
@@ -323,6 +361,7 @@ class ImageOfferFrame extends RelayedFrame {
     'w': width,
     'h': height,
     'preview': preview,
+    'reply': ?reply,
   };
 }
 
@@ -350,6 +389,75 @@ class ImageDataFrame extends RelayedFrame {
   String get type => 'image_data';
   @override
   Map<String, Object?> fieldsToJson() => {'sid': sid, 'img': img, 'data': data};
+}
+
+/// A recorded voice message, sent whole (base64 [data] of type [mime]).
+class VoiceFrame extends RelayedFrame {
+  const VoiceFrame({
+    required super.sid,
+    required this.mid,
+    required this.durationMs,
+    required this.mime,
+    required this.data,
+    this.reply,
+  });
+  final String mid;
+  final int durationMs;
+  final String mime;
+  final String data;
+  final String? reply;
+  @override
+  String get type => 'voice';
+  @override
+  Map<String, Object?> fieldsToJson() => {
+    'sid': sid,
+    'mid': mid,
+    'ms': durationMs,
+    'mime': mime,
+    'data': data,
+    'reply': ?reply,
+  };
+}
+
+/// Reacts to the bubble [ref] of the peer; an empty [emoji] removes it.
+class ReactionFrame extends RelayedFrame {
+  const ReactionFrame({
+    required super.sid,
+    required this.ref,
+    required this.emoji,
+  });
+  final String ref;
+  final String emoji;
+  @override
+  String get type => 'reaction';
+  @override
+  Map<String, Object?> fieldsToJson() => {
+    'sid': sid,
+    'ref': ref,
+    'emoji': emoji,
+  };
+}
+
+/// Client → server: the IDs whose presence I want to follow (replaces the
+/// previous list). The server answers with one [PresenceFrame] per ID.
+class PresenceWatchFrame extends Frame {
+  const PresenceWatchFrame({required this.ids});
+  final List<String> ids;
+  @override
+  String get type => 'presence_watch';
+  @override
+  Map<String, Object?> fieldsToJson() => {'ids': ids};
+}
+
+/// Server → client: a watched ID went online or offline.
+class PresenceFrame extends Frame {
+  const PresenceFrame({required this.id, required this.online});
+  final String id;
+  final bool online;
+  @override
+  String get type => 'presence';
+  @override
+  Map<String, Object?> fieldsToJson() => {'id': id, 'online': online};
 }
 
 class ErrorFrame extends Frame {
@@ -422,13 +530,67 @@ class _Reader {
     return value;
   }
 
-  static final _imageId = RegExp(r'^[0-9a-f]{8,32}$');
   static final _base64 = RegExp(r'^[A-Za-z0-9+/=_-]+$');
+  static final _audioMime = RegExp(
+    r'^audio/[a-z0-9.+-]{1,40}(;[ a-z0-9.=,"-]{1,60})?$',
+  );
 
-  String imageId() {
-    final value = str('img');
-    if (!_imageId.hasMatch(value)) {
-      throw const FrameFormatException('"img" invalid');
+  String imageId() => entryId('img');
+
+  String entryId(String key) {
+    final value = str(key);
+    if (!EntryId.isValid(value)) {
+      throw FrameFormatException('"$key" invalid');
+    }
+    return value;
+  }
+
+  String? optionalEntryId(String key) =>
+      json[key] == null ? null : entryId(key);
+
+  bool boolean(String key) {
+    final value = json[key];
+    if (value is! bool) throw FrameFormatException('"$key" must be a boolean');
+    return value;
+  }
+
+  List<String> idList(String key) {
+    final value = json[key];
+    if (value is! List || value.length > kMaxPresenceWatch) {
+      throw FrameFormatException('"$key" must be a list of IDs');
+    }
+    return [
+      for (final id in value)
+        if (id is String && DismessageId.isValid(id))
+          id
+        else
+          throw FrameFormatException('"$key" contains an invalid ID'),
+    ];
+  }
+
+  /// An emoji, or empty to remove a reaction.
+  String emoji() {
+    final value = json['emoji'];
+    if (value is! String ||
+        value.length > kMaxReactionLength ||
+        value.trim() != value) {
+      throw const FrameFormatException('"emoji" invalid');
+    }
+    return value;
+  }
+
+  int durationMs() {
+    final value = json['ms'];
+    if (value is! int || value < 1 || value > (kMaxVoiceSeconds + 5) * 1000) {
+      throw const FrameFormatException('"ms" invalid');
+    }
+    return value;
+  }
+
+  String audioMime() {
+    final value = str('mime');
+    if (!_audioMime.hasMatch(value)) {
+      throw const FrameFormatException('"mime" must be an audio type');
     }
     return value;
   }

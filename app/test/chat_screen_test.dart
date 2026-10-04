@@ -61,7 +61,12 @@ void main() {
   testWidgets('saving a contact never stores the conversation', (tester) async {
     await pumpChat(tester);
     session.receive(
-      const MessageCommitFrame(sid: 's1', seq: 1, text: 'secret du jour'),
+      const MessageCommitFrame(
+        sid: 's1',
+        seq: 1,
+        text: 'secret du jour',
+        mid: 'aaaabbbbccccdddd',
+      ),
     );
     await tester.pump();
     await contacts.save(peer, 'Bob');

@@ -13,7 +13,9 @@ DraftUpdate deliver(DraftState state, RelayedFrame frame) => switch (frame) {
   DraftResyncFrame() ||
   ImageOfferFrame() ||
   ImageRequestFrame() ||
-  ImageDataFrame() => DraftUpdate.ignored,
+  ImageDataFrame() ||
+  VoiceFrame() ||
+  ReactionFrame() => DraftUpdate.ignored,
 };
 
 void main() {
@@ -143,8 +145,10 @@ void main() {
       final sender = DraftSender('s1')..update('   ');
       expect(sender.commit(), isNull);
       sender.update('Salut');
-      final frame = sender.commit()!;
+      final frame = sender.commit(reply: '0123456789abcdef')!;
       expect(frame.text, 'Salut');
+      expect(EntryId.isValid(frame.mid), isTrue);
+      expect(frame.reply, '0123456789abcdef');
       expect(sender.text, '');
       expect(sender.hasPending, isFalse);
     });

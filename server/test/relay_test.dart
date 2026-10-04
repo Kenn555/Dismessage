@@ -268,10 +268,19 @@ void main() {
         ),
       );
       a.send(DraftSnapshotFrame(sid: sid, seq: 2, text: 'Bonjour'));
-      a.send(MessageCommitFrame(sid: sid, seq: 3, text: 'Bonjour'));
+      a.send(
+        MessageCommitFrame(
+          sid: sid,
+          seq: 3,
+          text: 'Bonjour\nà toi',
+          mid: 'aaaabbbbccccdddd',
+        ),
+      );
       expect((await b.expectNext<DraftOpsFrame>()).ops.single.ins, 'Bon');
       expect((await b.expectNext<DraftSnapshotFrame>()).text, 'Bonjour');
-      expect((await b.expectNext<MessageCommitFrame>()).text, 'Bonjour');
+      final commit = await b.expectNext<MessageCommitFrame>();
+      expect(commit.text, 'Bonjour\nà toi');
+      expect(commit.mid, 'aaaabbbbccccdddd');
 
       b.send(DraftResyncFrame(sid: sid));
       await a.expectNext<DraftResyncFrame>();
@@ -305,12 +314,61 @@ void main() {
       await c.expectSilence();
     });
 
+    test('replies, reactions and voice reach the peer only', () async {
+      final a = await (await client()).register(idA);
+      final b = await (await client()).register(idB);
+      final c = await (await client()).register(idC);
+      final sid = await pair(a, b);
+      const first = 'aaaabbbbccccdddd';
+
+      a.send(MessageCommitFrame(sid: sid, seq: 1, text: 'Salut', mid: first));
+      await b.expectNext<MessageCommitFrame>();
+      b.send(
+        MessageCommitFrame(
+          sid: sid,
+          seq: 1,
+          text: 'Re',
+          mid: '1111222233334444',
+          reply: first,
+        ),
+      );
+      expect((await a.expectNext<MessageCommitFrame>()).reply, first);
+
+      b.send(ReactionFrame(sid: sid, ref: first, emoji: '👍'));
+      final reaction = await a.expectNext<ReactionFrame>();
+      expect((reaction.ref, reaction.emoji), (first, '👍'));
+
+      // Close to the maximum size: must go through in one frame.
+      final data = 'A' * (kMaxVoiceDataLength - 4);
+      a.send(
+        VoiceFrame(
+          sid: sid,
+          mid: '9999888877776666',
+          durationMs: 3000,
+          mime: 'audio/mp4',
+          data: data,
+          reply: first,
+        ),
+      );
+      final voice = await b.expectNext<VoiceFrame>();
+      expect(voice.data.length, data.length);
+      expect(voice.durationMs, 3000);
+      await c.expectSilence();
+    });
+
     test('a third party cannot inject into a session', () async {
       final a = await (await client()).register(idA);
       final b = await (await client()).register(idB);
       final c = await (await client()).register(idC);
       final sid = await pair(a, b);
-      c.send(MessageCommitFrame(sid: sid, seq: 1, text: 'pirate'));
+      c.send(
+        MessageCommitFrame(
+          sid: sid,
+          seq: 1,
+          text: 'pirate',
+          mid: 'aaaabbbbccccdddd',
+        ),
+      );
       expect((await c.expectNext<ErrorFrame>()).code, 'unknown_session');
       await a.expectSilence();
       await b.expectSilence();
@@ -333,6 +391,76 @@ void main() {
       await a.close();
       expect((await b.expectNext<PeerLeftFrame>()).sid, sid);
       expect(relay.sessionCount, 0);
+    });
+  });
+
+  group('presence', () {
+    test('watching reports the current state of each ID', () async {
+      final a = await (await client()).register(idA);
+      await (await client()).register(idB);
+      a.send(const PresenceWatchFrame(ids: [idB, idC]));
+      final b = await a.expectNext<PresenceFrame>();
+      final c = await a.expectNext<PresenceFrame>();
+      expect((b.id, b.online), (idB, true));
+      expect((c.id, c.online), (idC, false));
+    });
+
+    test('watchers learn when an ID comes and goes', () async {
+      final a = await (await client()).register(idA);
+      a.send(const PresenceWatchFrame(ids: [idB]));
+      expect((await a.expectNext<PresenceFrame>()).online, isFalse);
+
+      final b = await (await client()).register(idB);
+      final online = await a.expectNext<PresenceFrame>();
+      expect((online.id, online.online), (idB, true));
+
+      await b.close();
+      final offline = await a.expectNext<PresenceFrame>();
+      expect((offline.id, offline.online), (idB, false));
+    });
+
+    test('a new watch list replaces the previous one', () async {
+      final a = await (await client()).register(idA);
+      a.send(const PresenceWatchFrame(ids: [idB]));
+      await a.expectNext<PresenceFrame>();
+      a.send(const PresenceWatchFrame(ids: []));
+      await (await client()).register(idB);
+      await a.expectSilence();
+    });
+
+    test('reconnecting elsewhere does not flicker offline', () async {
+      final a = await (await client()).register(idA);
+      await (await client()).register(idB, 'secret-b');
+      a.send(const PresenceWatchFrame(ids: [idB]));
+      expect((await a.expectNext<PresenceFrame>()).online, isTrue);
+      await (await client()).register(idB, 'secret-b');
+      await a.expectSilence();
+    });
+
+    test('releasing an ID shows it offline', () async {
+      final a = await (await client()).register(idA);
+      final b = await (await client()).register(idB, 'secret-b');
+      a.send(const PresenceWatchFrame(ids: [idB]));
+      await a.expectNext<PresenceFrame>();
+      b.send(const ReleaseFrame(id: idB, secret: 'secret-b'));
+      expect((await a.expectNext<PresenceFrame>()).online, isFalse);
+    });
+
+    test('requires registration', () async {
+      final a = await client();
+      a.send(const PresenceWatchFrame(ids: [idB]));
+      expect((await a.expectNext<ErrorFrame>()).code, 'not_registered');
+    });
+
+    test('a disconnected watcher is forgotten', () async {
+      final a = await (await client()).register(idA);
+      a.send(const PresenceWatchFrame(ids: [idB]));
+      await a.expectNext<PresenceFrame>();
+      await a.close();
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      // Would throw on a closed sink if A were still a watcher.
+      await (await client()).register(idB);
+      expect(relay.onlineCount, 1);
     });
   });
 

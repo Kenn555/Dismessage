@@ -42,3 +42,21 @@ const int kMaxImageDataLength = (kMaxImageBytes + 2) ~/ 3 * 4;
 
 /// Maximum size of one raw WebSocket message (an image plus JSON overhead).
 const int kMaxFrameLength = kMaxImageDataLength + 4096;
+
+/// Maximum number of IDs one client can watch for presence (its contacts).
+const int kMaxPresenceWatch = 500;
+
+/// Maximum length (UTF-16 code units) of a reaction emoji.
+const int kMaxReactionLength = 16;
+
+/// Longest voice message, in seconds.
+const int kMaxVoiceSeconds = 120;
+
+/// Voice encoder bit rate: [kMaxVoiceSeconds] must fit in [kMaxVoiceBytes].
+const int kVoiceBitRate = 32000;
+
+/// Maximum size of an encoded voice message, in bytes.
+const int kMaxVoiceBytes = kMaxImageBytes;
+
+/// Maximum base64 length of a voice message.
+const int kMaxVoiceDataLength = (kMaxVoiceBytes + 2) ~/ 3 * 4;

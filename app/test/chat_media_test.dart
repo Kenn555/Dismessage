@@ -13,6 +13,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:image/image.dart' as img;
 
+import 'fakes.dart';
+
 const peer = '318343691';
 
 final jpeg = img.encodeJpg(img.Image(width: 40, height: 30));
@@ -47,8 +49,10 @@ void main() {
           session: session,
           connection: connection,
           contacts: ContactsService(store),
-          pickImage: pick ?? () async => jpeg,
+          pickImage: pick ?? (_) async => jpeg,
+          cameraAvailable: false,
           encodeImage: encode ?? (_) async => encoded,
+          createAudioBackend: FakeAudioBackend.new,
         ),
       ),
     );
@@ -108,7 +112,7 @@ void main() {
     });
 
     testWidgets('cancelling the picker sends nothing', (tester) async {
-      await pumpChat(tester, pick: () async => null);
+      await pumpChat(tester, pick: (_) async => null);
       await tester.tap(find.byKey(const Key('send-image')));
       await tester.pump();
       expect(sent, isEmpty);

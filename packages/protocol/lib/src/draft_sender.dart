@@ -1,4 +1,5 @@
 import 'constants.dart';
+import 'entry_id.dart';
 import 'frames.dart';
 import 'text_diff.dart';
 
@@ -58,9 +59,18 @@ class DraftSender {
   }
 
   /// Turns the current draft into a definitive message, or null if blank.
-  MessageCommitFrame? commit() {
+  ///
+  /// [mid] identifies the message (default: a new [EntryId]); [reply] is
+  /// the ID of the bubble it answers.
+  MessageCommitFrame? commit({String? mid, String? reply}) {
     if (_text.trim().isEmpty) return null;
-    final frame = MessageCommitFrame(sid: sid, seq: ++_seq, text: _text);
+    final frame = MessageCommitFrame(
+      sid: sid,
+      seq: ++_seq,
+      text: _text,
+      mid: mid ?? EntryId.generate(),
+      reply: reply,
+    );
     _text = '';
     _reset();
     return frame;

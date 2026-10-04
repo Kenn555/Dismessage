@@ -16,6 +16,9 @@ abstract final class AppTheme {
 
   static const radius = 16.0;
 
+  /// "Online" dots: the relay, a contact, a live conversation.
+  static const online = Color(0xFF10B981);
+
   static ThemeData light() => _build(Brightness.light);
   static ThemeData dark() => _build(Brightness.dark);
 

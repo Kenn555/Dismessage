@@ -9,38 +9,46 @@ import '../services/chat_session.dart';
 /// For the receiver it stays blurred until tapped; only then is the real
 /// image fetched. The sender sees whether it has been opened.
 class ImageBubble extends StatelessWidget {
-  const ImageBubble({super.key, required this.image, required this.onOpen});
+  const ImageBubble({
+    super.key,
+    required this.image,
+    required this.onOpen,
+    this.header,
+  });
 
   final ChatImage image;
   final VoidCallback onOpen;
+
+  /// Reply quote, if this image answers another bubble.
+  final Widget? header;
 
   static const maxWidth = 260.0;
 
   @override
   Widget build(BuildContext context) {
     final ratio = (image.width / image.height).clamp(0.5, 2.0);
-    return Align(
-      alignment: image.fromMe ? Alignment.centerRight : Alignment.centerLeft,
-      child: Padding(
-        padding: const EdgeInsets.symmetric(vertical: 4),
-        child: Column(
-          crossAxisAlignment: image.fromMe
-              ? CrossAxisAlignment.end
-              : CrossAxisAlignment.start,
-          children: [
-            ClipRRect(
-              borderRadius: BorderRadius.circular(18),
-              child: SizedBox(
-                width: maxWidth,
-                child: AspectRatio(
-                  aspectRatio: ratio,
-                  child: _content(context),
-                ),
-              ),
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: image.fromMe
+            ? CrossAxisAlignment.end
+            : CrossAxisAlignment.start,
+        children: [
+          if (header != null)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 4),
+              child: SizedBox(width: maxWidth, child: header),
             ),
-            if (image.fromMe) _receipt(context),
-          ],
-        ),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(18),
+            child: SizedBox(
+              width: maxWidth,
+              child: AspectRatio(aspectRatio: ratio, child: _content(context)),
+            ),
+          ),
+          if (image.fromMe) _receipt(context),
+        ],
       ),
     );
   }

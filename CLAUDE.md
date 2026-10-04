@@ -18,6 +18,13 @@ Chaque installation a un **ID à 9 chiffres** (style AnyDesk, ex. `482 913 075`)
 - Les **contacts** (`ContactsService`) sont stockés **uniquement sur l'appareil** (clé `dismessage.contacts`). Ils ne contiennent qu'un ID et un nom, jamais de message.
 - **Images :** seule une miniature déjà floutée part à l'envoi (`image_offer`). L'image nette n'est transférée (`image_data`) que quand le destinataire appuie pour l'ouvrir (`image_request`), et l'expéditeur voit alors « Ouverte ». `ImageCodec` réduit l'image à `kMaxImageSide`, la recompresse sous `kMaxImageBytes` et **supprime l'EXIF** (dont la position GPS). Les images ne vivent qu'en mémoire, comme les messages. Un client n'accepte un `image_data` que pour une image qu'il a demandée.
 - **Émojis :** panneau intégré (`EmojiPanel`), sans paquet externe. L'émoji est inséré au curseur puis diffusé en direct comme une frappe.
+- **Bulles :** chaque bulle (texte, image, vocal) porte un `EntryId` (16 hex aléatoires), commun aux deux pairs. Il sert aux **réponses** (champ `reply`, glisser la bulle vers la droite ou appui long → « Répondre ») et aux **réactions** (une seule par bulle, uniquement sur les bulles de l'interlocuteur ; renvoyer le même émoji la retire). Une référence vers une bulle inconnue est ignorée.
+- **Saisie :** multiligne. Clavier physique : Entrée envoie, Maj+Entrée ajoute une ligne. Clavier virtuel : Entrée ajoute une ligne, le bouton envoie.
+- **Photo :** un seul bouton propose « Prendre une photo » et « Choisir dans la galerie » (`image_picker`). Sans appareil photo (Windows), la galerie s'ouvre directement.
+- **Vocaux :** bouton micro à la place d'« Envoyer » quand la saisie est vide. Enregistrement en AAC (`audio/mp4`), à défaut Opus (navigateurs), à défaut WAV 8 kHz ; la durée est plafonnée pour tenir dans `kMaxVoiceBytes`. Le fichier temporaire est supprimé aussitôt lu : le vocal ne vit qu'en mémoire. Lecture par `VoicePlayer`, un vocal à la fois.
+  - **Android :** canal maison `dismessage/voice` (`android/app/src/main/kotlin/.../VoiceHandler.kt`, MediaRecorder + MediaPlayer). Ne **pas** ajouter `record` ni `audioplayers` (paquets « app-facing ») : `record_android` et `audioplayers_android` exigent AGP 7.3.1 / 8.12.3 et Kotlin 1.7.10 / 2.2.20, absents du cache Gradle. L'APK se construit hors ligne : `cd app/android && ./gradlew.bat assembleRelease --offline`.
+  - **Web et Windows :** implémentations `record_web` / `record_windows` et `audioplayers_web` / `audioplayers_windows`, appelées via leurs interfaces (`PluginVoiceRecorder`, `PluginAudioBackend`). Sur un build Windows propre, `audioplayers_windows` télécharge `nuget.exe` et le paquet WIL (~10 Mo) dans `app/build/` : ne pas supprimer ce dossier sans raison.
+- **Présence :** l'accueil envoie la liste des contacts (`presence_watch`) ; le serveur répond puis prévient à chaque connexion ou déconnexion (`presence`). Point vert / gris sur l'avatar, rien tant que l'état est inconnu.
 - Le serveur ne persiste que `ID → sha256(secret)` dans `server/data/ids.json`, pour empêcher le vol d'un ID.
 - Transport : JSON sur WebSocket (`ws://` en dev, `wss://` en prod). Le chiffrement de bout en bout est prévu plus tard.
 
@@ -61,7 +68,7 @@ cd app && flutter run -d <android> --dart-define=SERVER_URL=ws://10.0.2.2:8080
 | --- | --- | --- |
 | Relais | Render (Web Service, offre Free) : `https://dismessage.onrender.com` | `Dockerfile` à la racine, déploiement automatique à chaque push sur `main`. Health check : `/health` |
 | Client web | GitHub Pages | `.github/workflows/pages.yml` (tests + `flutter build web --base-href /<dépôt>/`) |
-| APK / EXE | `dist/` (local) | `flutter build apk --release` / `flutter build windows --release` |
+| APK / EXE | `dist/` (local) | `cd app/android && ./gradlew.bat assembleRelease --offline` / `flutter build windows --release` |
 
 - **Serveur par défaut :** `kProductionServer` dans `app/lib/config.dart`, utilisé par les versions release et par le web sur `*.github.io` (`chooseServerUri`, testé dans `config_test.dart`). Les versions debug visent un relais local.
 - **Limites de Render Free :** mise en veille après environ 15 min d'inactivité (premier réveil de 30 à 60 s), et pas de disque persistant. `ids.json` est perdu au redémarrage, et chaque client réenregistre son ID avec son secret.
@@ -104,10 +111,14 @@ Enveloppe : `{"t": "<type>", ...champs}`. Les trames de session portent `sid`.
 | `draft_snapshot` | C→S→C | `sid`, `seq`, `text` |
 | `draft_resync` | C→S→C | `sid` |
 | `draft_clear` | C→S→C | `sid`, `seq` |
-| `message_commit` | C→S→C | `sid`, `seq`, `text` |
-| `image_offer` | C→S→C | `sid`, `img`, `w`, `h`, `preview` (JPEG base64, déjà flouté, ≤ `kMaxImagePreviewLength`) |
+| `message_commit` | C→S→C | `sid`, `seq`, `text`, `mid` (EntryId), `reply`? (EntryId de la bulle citée) |
+| `image_offer` | C→S→C | `sid`, `img` (EntryId), `w`, `h`, `preview` (JPEG base64, déjà flouté, ≤ `kMaxImagePreviewLength`), `reply`? |
 | `image_request` | C→S→C | `sid`, `img` (le destinataire ouvre l'image ; sert aussi d'accusé « Ouverte ») |
 | `image_data` | C→S→C | `sid`, `img`, `data` (JPEG base64, ≤ `kMaxImageDataLength`) |
+| `voice` | C→S→C | `sid`, `mid`, `ms` (durée), `mime` (`audio/…`), `data` (base64, ≤ `kMaxVoiceDataLength`), `reply`? |
+| `reaction` | C→S→C | `sid`, `ref` (EntryId d'une bulle du destinataire), `emoji` (`""` = retirée, ≤ `kMaxReactionLength`) |
+| `presence_watch` | C→S | `ids` (≤ `kMaxPresenceWatch`, remplace la liste précédente ; enregistrement requis) |
+| `presence` | S→C | `id`, `online` (une par ID à la réception de `presence_watch`, puis à chaque changement) |
 | `error` | S→C | `code`, `message` |
 | `ping` / `pong` | C↔S | — |
 
@@ -131,7 +142,7 @@ Enveloppe : `{"t": "<type>", ...champs}`. Les trames de session portent `sid`.
 | Fichier | Couvre |
 | --- | --- |
 | `packages/protocol/test/*` | IDs, diff (dont le test aléatoire de 1 000 paires), émetteur et récepteur de brouillon, trames JSON |
-| `server/test/relay_test.dart` | Vrai serveur sur port éphémère : enregistrement, vol d'ID, release, mise en relation, relais isolé par session, robustesse |
+| `server/test/relay_test.dart` | Vrai serveur sur port éphémère : enregistrement, vol d'ID, release, mise en relation, relais isolé par session (dont réponses, réactions, vocaux), présence, robustesse |
 | `app/test/live_draft_bubble_test.dart` | Points absents pendant la frappe, présents après `kPauseDotsMs` et collés au texte, déroulé progressif, fondu, emoji |
 | `app/test/home_screen_test.dart` | Affichage de l'ID, validation de l'ID saisi, régénération avec confirmation |
 | `app/test/end_to_end_test.dart` | Deux `ConnectionService` réels + vrai relais : frappe en direct, envoi, départ, ID stable, régénération, annulation |
@@ -140,7 +151,11 @@ Enveloppe : `{"t": "<type>", ...champs}`. Les trames de session portent `sid`.
 | `app/test/contacts_service_test.dart`, `chat_screen_test.dart` | Carnet de contacts (persistance, validation) et enregistrement depuis le chat |
 | `app/test/image_codec_test.dart` | Redimensionnement, plafond de taille, miniature, transparence, **suppression de l'EXIF**, fichier corrompu |
 | `app/test/chat_session_images_test.dart`, `chat_media_test.dart` | Flux miniature, ouverture, données et accusé ; données non sollicitées ignorées ; bulle floutée ; panneau d'émojis (insertion au curseur, diffusion en direct) |
+| `app/test/chat_session_features_test.dart` | IDs de bulles, réponses (référence inconnue ignorée), réactions (bascule, seulement sur les bulles d'autrui), vocaux (taille, doublons) |
+| `app/test/chat_features_test.dart` | Multiligne et Entrée / Maj+Entrée, réponse par menu et par glissement, réactions, bouton photo (appareil / galerie), enregistrement, annulation, durée max, refus du micro, lecture |
+| `app/test/presence_test.dart` | Liste surveillée, point vert / gris, ajout de contact, présence oubliée à la déconnexion |
 
 - Le test de bout en bout utilise `test()` et non `testWidgets()` : sans binding de widgets, les vraies sockets et les vrais timers fonctionnent.
 - Pour simuler plusieurs clients dans un même process, on injecte `MemoryStore` dans `IdentityService` (`SharedPreferences` est un singleton).
 - `TypingDots` tourne en boucle : dans un test de widgets, utiliser `pump(durée)`, jamais `pumpAndSettle()` quand les points sont affichés.
+- `ChatScreen` reçoit ses dépendances matérielles par injection (`pickImage`, `cameraAvailable`, `createRecorder`, `createAudioBackend`) : dans les tests, utiliser `FakeVoiceRecorder` et `FakeAudioBackend` (`test/fakes.dart`). `VoicePlayer` ne crée son lecteur qu'à la première lecture.

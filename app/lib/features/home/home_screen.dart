@@ -47,10 +47,17 @@ class _HomeScreenState extends State<HomeScreen> {
   void initState() {
     super.initState();
     _events = _connection.events.listen(_onEvent);
+    _contacts.addListener(_watchContacts);
+    _watchContacts();
   }
+
+  /// Follows whether each saved contact is online.
+  void _watchContacts() =>
+      _connection.watchPresence(_contacts.contacts.map((c) => c.id));
 
   @override
   void dispose() {
+    _contacts.removeListener(_watchContacts);
     _events.cancel();
     _peerController.dispose();
     super.dispose();
@@ -367,6 +374,7 @@ class _HomeScreenState extends State<HomeScreen> {
                     listenable: Listenable.merge([_contacts, _connection]),
                     builder: (context, _) => _ContactList(
                       contacts: _contacts.contacts,
+                      isOnline: _connection.isOnline,
                       canConnect:
                           _connection.status == ServerStatus.online &&
                           _connection.pendingRequest == null,
@@ -508,6 +516,7 @@ class _SectionTitle extends StatelessWidget {
 class _ContactList extends StatelessWidget {
   const _ContactList({
     required this.contacts,
+    required this.isOnline,
     required this.canConnect,
     required this.onConnect,
     required this.onRename,
@@ -515,6 +524,9 @@ class _ContactList extends StatelessWidget {
   });
 
   final List<Contact> contacts;
+
+  /// Presence of a contact; null while unknown.
+  final bool? Function(String id) isOnline;
   final bool canConnect;
   final void Function(Contact) onConnect;
   final void Function(Contact) onRename;
@@ -560,10 +572,21 @@ class _ContactList extends StatelessWidget {
             ListTile(
               key: ValueKey('contact-${contact.id}'),
               contentPadding: const EdgeInsets.fromLTRB(16, 4, 4, 4),
-              leading: ContactAvatar(id: contact.id, name: contact.name),
+              leading: _PresenceAvatar(
+                contact: contact,
+                online: isOnline(contact.id),
+              ),
               title: Text(contact.name, style: theme.textTheme.titleMedium),
               subtitle: Text(
-                DismessageId.format(contact.id),
+                [
+                  DismessageId.format(contact.id),
+                  switch (isOnline(contact.id)) {
+                    true => 'En ligne',
+                    false => 'Hors ligne',
+                    null => null,
+                  },
+                ].nonNulls.join(' · '),
+                key: ValueKey('contact-status-${contact.id}'),
                 style: const TextStyle(
                   fontFeatures: [FontFeature.tabularFigures()],
                 ),
@@ -589,6 +612,47 @@ class _ContactList extends StatelessWidget {
   }
 }
 
+/// Contact avatar with a green (online) or grey (offline) dot; no dot
+/// while the presence is unknown.
+class _PresenceAvatar extends StatelessWidget {
+  const _PresenceAvatar({required this.contact, required this.online});
+
+  final Contact contact;
+  final bool? online;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final online = this.online;
+    return Stack(
+      clipBehavior: Clip.none,
+      children: [
+        ContactAvatar(id: contact.id, name: contact.name),
+        if (online != null)
+          Positioned(
+            right: -1,
+            bottom: -1,
+            child: Semantics(
+              label: online ? 'En ligne' : 'Hors ligne',
+              child: Container(
+                key: ValueKey(
+                  'presence-${contact.id}-${online ? 'on' : 'off'}',
+                ),
+                width: 14,
+                height: 14,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: online ? AppTheme.online : scheme.outline,
+                  border: Border.all(color: scheme.surface, width: 2.5),
+                ),
+              ),
+            ),
+          ),
+      ],
+    );
+  }
+}
+
 class _StatusChip extends StatelessWidget {
   const _StatusChip({required this.status});
 
@@ -597,7 +661,7 @@ class _StatusChip extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final (label, color) = switch (status) {
-      ServerStatus.online => ('En ligne', const Color(0xFF10B981)),
+      ServerStatus.online => ('En ligne', AppTheme.online),
       ServerStatus.connecting => ('Connexion…', const Color(0xFFF59E0B)),
       ServerStatus.offline => ('Hors ligne', const Color(0xFFEF4444)),
     };

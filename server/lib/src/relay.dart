@@ -14,6 +14,9 @@ class _Client {
   final WebSocketChannel channel;
   String? id;
 
+  /// IDs whose presence this client follows.
+  Set<String> watching = {};
+
   void send(Frame frame) => channel.sink.add(frame.encode());
 }
 
@@ -41,6 +44,9 @@ class Relay {
   final Map<String, _Client> _online = {};
   final Map<String, _Session> _sessions = {};
 
+  /// Watched ID → clients following its presence.
+  final Map<String, Set<_Client>> _watchers = {};
+
   /// Pending requests, as "from>to".
   final Set<String> _pending = {};
 
@@ -63,6 +69,7 @@ class Relay {
           '- déconnexion ${client.id == null ? '($from)' : _fmt(client.id!)}',
         );
         _unregister(client);
+        _watch(client, const []);
       }),
       onError: (_) {},
       cancelOnError: false,
@@ -104,6 +111,8 @@ class Relay {
         _connectReject(client, peer);
       case ConnectCancelFrame(:final peer):
         _connectCancel(client, peer);
+      case PresenceWatchFrame(:final ids):
+        if (_requireId(client) != null) _watch(client, ids);
       case SessionLeaveFrame(:final sid):
         _leave(client, sid);
       case RelayedFrame():
@@ -122,13 +131,15 @@ class Relay {
     if (client.id != null && client.id != id) _unregister(client);
     final previous = _online[id];
     if (previous != null && previous != client) {
-      // Same ID connected elsewhere: the newest connection wins.
-      _unregister(previous);
+      // Same ID connected elsewhere: the newest connection wins. It stays
+      // online for its watchers.
+      _unregister(previous, silent: true);
       previous.channel.sink.close();
     }
     client.id = id;
     _online[id] = client;
     client.send(RegisteredFrame(id: id));
+    if (previous == null) _notifyPresence(id, online: true);
     _log('  ID ${_fmt(id)} en ligne (${_online.length} en ligne)');
   }
 
@@ -199,11 +210,35 @@ class Relay {
     _online[session.other(me)]?.send(PeerLeftFrame(sid: sid));
   }
 
-  void _unregister(_Client client) {
+  /// Replaces the IDs [client] follows and tells it their current state.
+  void _watch(_Client client, List<String> ids) {
+    for (final id in client.watching) {
+      final watchers = _watchers[id];
+      watchers?.remove(client);
+      if (watchers != null && watchers.isEmpty) _watchers.remove(id);
+    }
+    client.watching = ids.toSet();
+    for (final id in client.watching) {
+      (_watchers[id] ??= {}).add(client);
+      client.send(PresenceFrame(id: id, online: _online.containsKey(id)));
+    }
+  }
+
+  void _notifyPresence(String id, {required bool online}) {
+    for (final watcher in _watchers[id]?.toList() ?? const <_Client>[]) {
+      watcher.send(PresenceFrame(id: id, online: online));
+    }
+  }
+
+  /// [silent]: the ID reconnects elsewhere, so watchers are not told.
+  void _unregister(_Client client, {bool silent = false}) {
     final id = client.id;
     if (id == null) return;
     client.id = null;
-    if (_online[id] == client) _online.remove(id);
+    if (_online[id] == client) {
+      _online.remove(id);
+      if (!silent) _notifyPresence(id, online: false);
+    }
     // Close pending requests on both sides so no dialog stays open.
     for (final pending in _pending.toList()) {
       final [from, to] = pending.split('>');
