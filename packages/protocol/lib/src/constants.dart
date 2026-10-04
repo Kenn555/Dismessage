@@ -60,3 +60,12 @@ const int kMaxVoiceBytes = kMaxImageBytes;
 
 /// Maximum base64 length of a voice message.
 const int kMaxVoiceDataLength = (kMaxVoiceBytes + 2) ~/ 3 * 4;
+
+/// Minimum delay between two silent updates of the "is typing" notification.
+const int kTypingNotificationMs = 1500;
+
+/// Unread messages shown in a conversation's notification (the latest).
+const int kNotificationMaxLines = 5;
+
+/// Longest text shown per line of a notification.
+const int kNotificationLineLength = 120;

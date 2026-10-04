@@ -141,6 +141,33 @@ void main() {
       expect(frame.text, 'abc');
     });
 
+    test('a reply from a notification keeps the draft in progress', () {
+      final sender = DraftSender('s1');
+      final receiver = DraftState();
+      sender.update('Je réfléch');
+      deliver(receiver, sender.flush()!);
+      expect(receiver.text, 'Je réfléch');
+
+      // Quick reply, then the local draft is streamed again.
+      final reply = sender.commitText('Oui !')!;
+      expect(receiver.commit(reply.seq, reply.text), 'Oui !');
+      expect(receiver.text, '');
+      sender.update('Je réfléch');
+      deliver(receiver, sender.flush()!);
+      expect(receiver.text, 'Je réfléch');
+
+      // Typing goes on normally afterwards.
+      sender.update('Je réfléchis');
+      deliver(receiver, sender.flush()!);
+      expect(receiver.text, 'Je réfléchis');
+    });
+
+    test('a blank or too long quick reply is refused', () {
+      final sender = DraftSender('s1');
+      expect(sender.commitText('  '), isNull);
+      expect(sender.commitText('x' * (kMaxTextLength + 1)), isNull);
+    });
+
     test('commit ignores blank text and resets the draft', () {
       final sender = DraftSender('s1')..update('   ');
       expect(sender.commit(), isNull);

@@ -6,6 +6,8 @@ import 'features/home/home_screen.dart';
 import 'services/connection_service.dart';
 import 'services/contacts_service.dart';
 import 'services/identity_service.dart';
+import 'services/notifications/chat_notifications.dart';
+import 'services/notifications/system_notifier.dart';
 import 'services/page_lifecycle.dart';
 import 'theme/app_theme.dart';
 
@@ -20,6 +22,17 @@ Future<void> main() async {
   );
   connection.start();
   watchPageLifecycle(onLeave: connection.suspend, onReturn: connection.resume);
+  final notifications = ChatNotifications(
+    connection: connection,
+    contacts: contacts,
+    notifier: platformNotifier(),
+  );
+  // Notify only what the user cannot see: app in the background, minimized,
+  // another window or tab in front.
+  AppLifecycleListener(
+    onStateChange: (state) =>
+        notifications.appVisible = state == AppLifecycleState.resumed,
+  );
   runApp(
     DismessageApp(
       connection: connection,

@@ -3,6 +3,7 @@
 #include <windows.h>
 
 #include "flutter_window.h"
+#include "notifications.h"
 #include "utils.h"
 
 namespace {
@@ -29,6 +30,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
     ::CloseHandle(instance_mutex);
     return EXIT_SUCCESS;
   }
+  RegisterAppUserModelId();
   // "--minimized": launched at Windows startup, stay in the taskbar.
   const bool start_minimized =
       command_line != nullptr && ::wcsstr(command_line, L"--minimized");

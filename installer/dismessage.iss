@@ -61,13 +61,17 @@ Source: "{#CrtDir}\vcruntime140.dll"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#CrtDir}\vcruntime140_1.dll"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
-Name: "{autoprograms}\{#AppName}"; Filename: "{app}\{#AppExe}"
-Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExe}"; Tasks: desktopicon
+; Même identité que l'appli (windows/runner/notifications.h) : notifications
+; groupées sous « Dismessage » et clic sur une notification qui la ramène.
+Name: "{autoprograms}\{#AppName}"; Filename: "{app}\{#AppExe}"; AppUserModelID: "Dismessage.Desktop"
+Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExe}"; AppUserModelID: "Dismessage.Desktop"; Tasks: desktopicon
 
 [Registry]
 ; Démarrage avec Windows : propre à l'utilisateur, retiré à la désinstallation
 ; ou si la case est décochée lors d'une réinstallation.
 Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "{#AppName}"; ValueData: """{app}\{#AppExe}"" --minimized"; Flags: uninsdeletevalue; Tasks: startup
+; Identité de notification enregistrée par l'appli : retirée à la désinstallation.
+Root: HKCU; Subkey: "Software\Classes\AppUserModelId\Dismessage.Desktop"; Flags: uninsdeletekey dontcreatekey
 Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: none; ValueName: "{#AppName}"; Flags: deletevalue; Tasks: not startup
 
 [Run]

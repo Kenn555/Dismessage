@@ -158,6 +158,24 @@ class ChatSession extends ChangeNotifier {
     return true;
   }
 
+  /// Sends [text] typed outside the chat (a notification's reply field).
+  /// The draft being typed in the chat, if any, is kept and streamed again.
+  bool sendQuickReply(String text) {
+    if (_peerLeft) return false;
+    _cancelFlush();
+    final draft = _sender.text;
+    final frame = _sender.commitText(text.trim(), mid: _newId());
+    if (frame == null) return false;
+    _send(frame);
+    _add(ChatMessage(id: frame.mid, text: frame.text, fromMe: true));
+    if (draft.isNotEmpty) {
+      _sender.update(draft);
+      _flush();
+    }
+    notifyListeners();
+    return true;
+  }
+
   /// Offers an image: only its blurred preview leaves now; the full image
   /// is sent when the peer opens it.
   ChatImage? sendImage(EncodedImage image, {ChatEntry? replyTo}) {

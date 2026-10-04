@@ -76,6 +76,26 @@ class DraftSender {
     return frame;
   }
 
+  /// Sends [text] as a message without going through the draft (e.g. a
+  /// reply typed in a system notification), or null if blank.
+  ///
+  /// The peer's view of the draft is cleared by the commit: the caller
+  /// re-sends the local draft afterwards with [update] then [flush]. The
+  /// local [text] is reset to '' so the next [update] sends it whole.
+  MessageCommitFrame? commitText(String text, {String? mid, String? reply}) {
+    if (text.trim().isEmpty || text.length > kMaxTextLength) return null;
+    final frame = MessageCommitFrame(
+      sid: sid,
+      seq: ++_seq,
+      text: text,
+      mid: mid ?? EntryId.generate(),
+      reply: reply,
+    );
+    _text = '';
+    _reset();
+    return frame;
+  }
+
   DraftSnapshotFrame _snapshot() {
     _reset();
     return DraftSnapshotFrame(sid: sid, seq: ++_seq, text: _text);
