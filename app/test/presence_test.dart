@@ -99,6 +99,32 @@ void main() {
     await cleanUp(tester);
   });
 
+  testWidgets('leaving the page disconnects, coming back reconnects', (
+    tester,
+  ) async {
+    await pumpHome(tester);
+    channel.receive(const PresenceFrame(id: alice, online: true));
+    await tester.pump();
+
+    connection.suspend();
+    await tester.pump();
+    expect(connection.status, ServerStatus.offline);
+    expect(connection.isOnline(alice), isNull);
+    // No automatic reconnection while the page is away.
+    await tester.pump(const Duration(seconds: kMaxReconnectDelaySeconds + 1));
+    expect(connection.status, ServerStatus.offline);
+
+    final again = ScriptedChannel();
+    channel = again;
+    await connection.resume();
+    expect(again.sink.sent.whereType<RegisterFrame>(), hasLength(1));
+    again.receive(const RegisteredFrame(id: me));
+    await tester.pump();
+    expect(connection.status, ServerStatus.online);
+    expect(again.sink.sent.whereType<PresenceWatchFrame>().single.ids, [alice]);
+    await cleanUp(tester);
+  });
+
   testWidgets('presence is forgotten when the relay connection drops', (
     tester,
   ) async {

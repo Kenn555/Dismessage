@@ -150,6 +150,29 @@ void main() {
       expect(find.text('Alice'), findsWidgets);
     });
 
+    testWidgets('under a wider quote, the text stays left-aligned', (
+      tester,
+    ) async {
+      await pumpChat(tester);
+      receiveText('Une question assez longue pour élargir la citation ?');
+      await tester.pump();
+      session.receive(
+        const MessageCommitFrame(
+          sid: 's1',
+          seq: 2,
+          text: 'Oui',
+          mid: '1111222233334444',
+          reply: theirs,
+        ),
+      );
+      await tester.pump();
+      final quote = tester.getTopLeft(
+        find.byKey(const ValueKey('quote-1111222233334444')),
+      );
+      final text = tester.getTopLeft(find.text('Oui'));
+      expect(text.dx - quote.dx, lessThan(20));
+    });
+
     testWidgets('swiping a bubble to the right replies to it', (tester) async {
       await pumpChat(tester);
       receiveText('Swipe moi');

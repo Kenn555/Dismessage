@@ -4,6 +4,7 @@ library;
 import 'dart:async';
 import 'dart:io';
 
+import 'package:dismessage_protocol/dismessage_protocol.dart';
 import 'package:shelf/shelf.dart';
 import 'package:shelf/shelf_io.dart' as shelf_io;
 import 'package:shelf_static/shelf_static.dart';
@@ -25,6 +26,7 @@ Future<HttpServer> serve(
   Object address = '0.0.0.0',
   int port = 8080,
   String? webRoot,
+  Duration pingInterval = const Duration(seconds: kHeartbeatSeconds),
 }) {
   FutureOr<Response> ws(Request request) {
     // Behind a tunnel or proxy, the real client IP is forwarded.
@@ -35,6 +37,9 @@ Future<HttpServer> serve(
         info?.remoteAddress.address;
     return webSocketHandler(
       (channel, _) => relay.handle(channel, origin: origin),
+      // A client that vanished without closing (network lost, frozen
+      // page) stops answering pings: drop it so it shows offline.
+      pingInterval: pingInterval,
     )(request);
   }
 

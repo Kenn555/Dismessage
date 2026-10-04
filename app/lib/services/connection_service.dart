@@ -87,6 +87,7 @@ class ConnectionService extends ChangeNotifier {
   ChatSession? _session;
   ServerStatus _status = ServerStatus.offline;
   bool _disposed = false;
+  bool _suspended = false;
   Uri _serverUri;
   Set<String> _watched = {};
   final Map<String, bool> _presence = {};
@@ -200,6 +201,29 @@ class ConnectionService extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// The page is being left (web): the browser may keep it frozen in its
+  /// back/forward cache with the socket open, so we would still look
+  /// online. Close the connection; [resume] reopens it.
+  void suspend() {
+    if (_disposed || _suspended) return;
+    _suspended = true;
+    _generation++;
+    _reconnectTimer?.cancel();
+    _clearRequest();
+    final channel = _channel;
+    _closeChannel();
+    channel?.sink.close();
+    _session?.markPeerLeft();
+    _setStatus(ServerStatus.offline);
+  }
+
+  /// The page is shown again after [suspend].
+  Future<void> resume() async {
+    if (!_suspended) return;
+    _suspended = false;
+    await _open();
+  }
+
   /// Connects to another relay (e.g. a new VS Code tunnel link).
   Future<void> setServerUri(Uri uri) async {
     if (uri == _serverUri) return;
@@ -216,7 +240,7 @@ class ConnectionService extends ChangeNotifier {
   }
 
   Future<void> _open() async {
-    if (_disposed) return;
+    if (_disposed || _suspended) return;
     final generation = _generation;
     _setStatus(ServerStatus.connecting);
     final WebSocketChannel channel;
@@ -336,7 +360,7 @@ class ConnectionService extends ChangeNotifier {
   void _fail(String reason) {
     _failures++;
     _lastError = reason;
-    if (_disposed) return;
+    if (_disposed || _suspended) return;
     final factor = 1 << (_failures - 1).clamp(0, 10);
     final delay = reconnectDelay * factor;
     const max = Duration(seconds: kMaxReconnectDelaySeconds);

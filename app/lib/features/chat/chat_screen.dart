@@ -34,9 +34,10 @@ typedef ImageEncoderFn = Future<EncodedImage> Function(Uint8List bytes);
 Future<Uint8List?> _pickImage(ImageSource source) async {
   final file = await ImagePicker().pickImage(
     source: source,
-    // Native downscale on mobile: less work for the Dart encoder.
-    maxWidth: 2560,
-    maxHeight: 2560,
+    // Native downscale (mobile, browser canvas): the Dart encoder is slow on
+    // a 12 MP photo, and on the web it runs on the UI thread.
+    maxWidth: kMaxImageSide.toDouble(),
+    maxHeight: kMaxImageSide.toDouble(),
   );
   return file?.readAsBytes();
 }
@@ -884,27 +885,34 @@ class _MessageBubble extends StatelessWidget {
           bottomRight: mine ? small : big,
         ),
       ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.end,
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          if (header != null)
-            Padding(padding: const EdgeInsets.only(bottom: 6), child: header),
-          Padding(
-            padding: EdgeInsets.only(left: header == null ? 0 : 8),
-            child: Text(
-              message.text,
-              style: theme.textTheme.bodyLarge?.copyWith(color: foreground),
+      // As wide as the widest line: the text stays left-aligned under a
+      // wider quote, the time stays on the right.
+      child: IntrinsicWidth(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (header != null)
+              Padding(padding: const EdgeInsets.only(bottom: 6), child: header),
+            Padding(
+              padding: EdgeInsets.only(left: header == null ? 0 : 8),
+              child: Text(
+                message.text,
+                style: theme.textTheme.bodyLarge?.copyWith(color: foreground),
+              ),
             ),
-          ),
-          const SizedBox(height: 2),
-          Text(
-            time,
-            style: theme.textTheme.labelSmall?.copyWith(
-              color: foreground.withValues(alpha: 0.7),
+            const SizedBox(height: 2),
+            Align(
+              alignment: Alignment.centerRight,
+              child: Text(
+                time,
+                style: theme.textTheme.labelSmall?.copyWith(
+                  color: foreground.withValues(alpha: 0.7),
+                ),
+              ),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }

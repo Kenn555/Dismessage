@@ -6,6 +6,7 @@ import 'features/home/home_screen.dart';
 import 'services/connection_service.dart';
 import 'services/contacts_service.dart';
 import 'services/identity_service.dart';
+import 'services/page_lifecycle.dart';
 import 'theme/app_theme.dart';
 
 Future<void> main() async {
@@ -18,6 +19,7 @@ Future<void> main() async {
     serverUri: settings.serverUri,
   );
   connection.start();
+  watchPageLifecycle(onLeave: connection.suspend, onReturn: connection.resume);
   runApp(
     DismessageApp(
       connection: connection,

@@ -459,6 +459,46 @@ void main() {
       expect((await a.expectNext<PresenceFrame>()).online, isFalse);
     });
 
+    test('a client that stops answering pings goes offline', () async {
+      // Short ping interval for this test only.
+      await server.close(force: true);
+      server = await serve(
+        relay,
+        address: 'localhost',
+        port: 0,
+        pingInterval: const Duration(milliseconds: 300),
+      );
+      final watcher = await (await client()).register(idA);
+      watcher.send(const PresenceWatchFrame(ids: [idB]));
+      expect((await watcher.expectNext<PresenceFrame>()).online, isFalse);
+
+      // A raw socket: WebSocket handshake, register, then silence (no pong),
+      // like a phone that lost its network without closing.
+      final ghost = await Socket.connect('localhost', server.port);
+      addTearDown(ghost.destroy);
+      final handshake = Completer<void>();
+      ghost.listen((data) {
+        if (!handshake.isCompleted &&
+            String.fromCharCodes(data).contains('101')) {
+          handshake.complete();
+        }
+      });
+      ghost.write(
+        'GET /ws HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\n'
+        'Connection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n'
+        'Sec-WebSocket-Version: 13\r\n\r\n',
+      );
+      await handshake.future.timeout(timeout);
+      ghost.add(
+        _maskedText(RegisterFrame(id: idB, secret: 'ghost-secret').encode()),
+      );
+
+      final online = await watcher.expectNext<PresenceFrame>();
+      expect((online.id, online.online), (idB, true));
+      final offline = await watcher.expectNext<PresenceFrame>();
+      expect((offline.id, offline.online), (idB, false));
+    });
+
     test('requires registration', () async {
       final a = await client();
       a.send(const PresenceWatchFrame(ids: [idB]));
@@ -528,4 +568,17 @@ void main() {
       await a.expectNext<PongFrame>();
     });
   });
+}
+
+/// A client-to-server WebSocket text frame (clients must mask), < 64 KiB.
+List<int> _maskedText(String text) {
+  final payload = text.codeUnits;
+  const mask = [1, 2, 3, 4];
+  return [
+    0x81,
+    0x80 | (payload.length < 126 ? payload.length : 126),
+    if (payload.length >= 126) ...[payload.length >> 8, payload.length & 0xff],
+    ...mask,
+    for (var i = 0; i < payload.length; i++) payload[i] ^ mask[i % 4],
+  ];
 }

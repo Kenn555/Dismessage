@@ -17,6 +17,9 @@ abstract class AudioBackend {
   Future<void> dispose();
 }
 
+/// "audio/webm;codecs=opus" → "audio/webm".
+String baseMime(String mime) => mime.split(';').first.trim();
+
 /// The audio output of the current platform.
 AudioBackend platformAudioBackend() =>
     !kIsWeb && defaultTargetPlatform == TargetPlatform.android
@@ -155,7 +158,9 @@ class PluginAudioBackend extends _PollingBackend {
     await _ensureCreated();
     // Some platforms load the source in the background: wait until ready.
     final prepared = _prepared = Completer<void>();
-    await _platform.setSourceBytes(_id, bytes, mimeType: mime);
+    // The web player puts the type in a data: URI, where parameters such as
+    // ";codecs=opus" get escaped into an unknown type: keep the base type.
+    await _platform.setSourceBytes(_id, bytes, mimeType: baseMime(mime));
     await prepared.future.timeout(const Duration(seconds: 10));
     await _platform.resume(_id);
     _startPolling();
@@ -247,10 +252,14 @@ class VoicePlayer extends ChangeNotifier {
         notifyListeners();
         await _backend.play(voice.bytes, voice.mime);
       }
-    } catch (_) {
+    } catch (e) {
       _playing = false;
       _currentId = null;
-      _error = 'Lecture impossible sur cet appareil.';
+      // Show the cause: a remote friend can then report it.
+      final cause = e.toString().split('\n').first;
+      _error =
+          'Lecture impossible '
+          '(${cause.length > 160 ? '${cause.substring(0, 160)}…' : cause}).';
     }
     notifyListeners();
   }
