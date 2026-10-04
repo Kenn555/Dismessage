@@ -15,6 +15,10 @@ import '../../widgets/contact_dialog.dart';
 import '../../widgets/dismessage_logo.dart';
 import '../chat/chat_screen.dart';
 
+/// From this width (computer, tablet in landscape), the home screen splits in
+/// two columns: my ID and the new conversation form, then the contacts.
+const double kHomeTwoColumnsWidth = 840;
+
 class HomeScreen extends StatefulWidget {
   const HomeScreen({
     super.key,
@@ -308,164 +312,214 @@ class _HomeScreenState extends State<HomeScreen> {
         ],
       ),
       body: SafeArea(
-        child: Center(
-          child: SingleChildScrollView(
-            padding: const EdgeInsets.fromLTRB(20, 8, 20, 32),
-            child: ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: 480),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  ListenableBuilder(
-                    listenable: _connection,
-                    builder: (context, _) =>
-                        _ConnectionBanner(connection: _connection),
-                  ),
-                  ListenableBuilder(
-                    listenable: Listenable.merge([_connection, _privacy]),
-                    builder: (context, _) => _IdCard(
-                      id: _connection.myId,
-                      privacy: _privacy,
-                      onCopy: _copyId,
-                      onRegenerate: _regenerate,
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            final wide = constraints.maxWidth >= kHomeTwoColumnsWidth;
+            final banner = ListenableBuilder(
+              listenable: _connection,
+              builder: (context, _) =>
+                  _ConnectionBanner(connection: _connection),
+            );
+            if (!wide) {
+              return Center(
+                child: SingleChildScrollView(
+                  padding: const EdgeInsets.fromLTRB(20, 8, 20, 32),
+                  child: ConstrainedBox(
+                    constraints: const BoxConstraints(maxWidth: 480),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        banner,
+                        ..._conversationColumn(),
+                        const SizedBox(height: 32),
+                        ..._contactsColumn(),
+                      ],
                     ),
                   ),
-                  const SizedBox(height: 32),
-                  const _SectionTitle(
-                    title: 'Nouvelle conversation',
-                    subtitle: "Entrez l'ID de la personne à joindre.",
-                  ),
-                  const SizedBox(height: 12),
-                  Card(
-                    child: Padding(
-                      padding: const EdgeInsets.all(16),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.stretch,
-                        children: [
-                          TextField(
-                            key: const Key('peer-id'),
-                            controller: _peerController,
-                            keyboardType: TextInputType.number,
-                            inputFormatters: [
-                              FilteringTextInputFormatter.allow(
-                                RegExp(r'[0-9 \-]'),
-                              ),
-                            ],
-                            style: const TextStyle(
-                              fontFeatures: [FontFeature.tabularFigures()],
-                              letterSpacing: 1,
-                            ),
-                            decoration: InputDecoration(
-                              labelText: "ID de l'interlocuteur",
-                              hintText: '123 456 789',
-                              prefixIcon: const Icon(Icons.tag_rounded),
-                              errorText: _peerError,
-                            ),
-                            onSubmitted: (_) => _connect(),
-                          ),
-                          const SizedBox(height: 12),
-                          ListenableBuilder(
-                            listenable: _connection,
-                            builder: (context, _) {
-                              final pending = _connection.pendingRequest;
-                              return AnimatedSwitcher(
-                                duration: const Duration(milliseconds: 200),
-                                // Full width (the default centers the child).
-                                layoutBuilder: (current, previous) => Stack(
-                                  children: [
-                                    ...previous,
-                                    if (current != null)
-                                      SizedBox(
-                                        width: double.infinity,
-                                        child: current,
-                                      ),
-                                  ],
-                                ),
-                                child: pending != null
-                                    ? _PendingRequestCard(
-                                        key: ValueKey(pending),
-                                        peerLabel: _label(pending),
-                                        onCancel: _connection.cancelRequest,
-                                      )
-                                    : FilledButton.icon(
-                                        key: const Key('connect'),
-                                        icon: const Icon(
-                                          Icons.arrow_forward_rounded,
-                                        ),
-                                        label: const Text('Se connecter'),
-                                        onPressed:
-                                            _connection.status ==
-                                                ServerStatus.online
-                                            ? _connect
-                                            : null,
-                                      ),
-                              );
-                            },
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 32),
-                  Row(
-                    crossAxisAlignment: CrossAxisAlignment.end,
+                ),
+              );
+            }
+            // Each column scrolls on its own: a long contact list does not
+            // push my ID out of sight.
+            Widget column(Key key, List<Widget> children) => Expanded(
+              child: SingleChildScrollView(
+                key: key,
+                padding: const EdgeInsets.fromLTRB(10, 16, 10, 32),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: children,
+                ),
+              ),
+            );
+            return Center(
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 1040),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 10),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
-                      const Expanded(
-                        child: _SectionTitle(
-                          title: 'Contacts',
-                          subtitle: 'Sur cet appareil uniquement.',
-                        ),
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(10, 8, 10, 0),
+                        child: banner,
                       ),
-                      ListenableBuilder(
-                        listenable: _privacy,
-                        builder: (context, _) => IconButton(
-                          key: const Key('reveal-contact-ids'),
-                          tooltip: _privacy.showContacts
-                              ? 'Masquer les ID'
-                              : 'Afficher les ID',
-                          icon: Icon(
-                            _privacy.showContacts
-                                ? Icons.visibility_off_outlined
-                                : Icons.visibility_outlined,
-                          ),
-                          onPressed: _privacy.toggleContacts,
+                      Expanded(
+                        child: Row(
+                          key: const Key('home-two-columns'),
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            column(
+                              const Key('home-left-column'),
+                              _conversationColumn(),
+                            ),
+                            const SizedBox(width: 12),
+                            column(
+                              const Key('home-right-column'),
+                              _contactsColumn(),
+                            ),
+                          ],
                         ),
-                      ),
-                      TextButton.icon(
-                        key: const Key('add-contact'),
-                        icon: const Icon(Icons.person_add_alt_1_rounded),
-                        label: const Text('Ajouter'),
-                        onPressed: _addContact,
                       ),
                     ],
                   ),
-                  const SizedBox(height: 12),
-                  ListenableBuilder(
-                    listenable: Listenable.merge([
-                      _contacts,
-                      _connection,
-                      _privacy,
-                    ]),
-                    builder: (context, _) => _ContactList(
-                      contacts: _contacts.contacts,
-                      displayId: _privacy.contact,
-                      isOnline: _connection.isOnline,
-                      canConnect:
-                          _connection.status == ServerStatus.online &&
-                          _connection.pendingRequest == null,
-                      onConnect: (c) => _connection.requestChat(c.id),
-                      onRename: _renameContact,
-                      onRemove: _removeContact,
-                    ),
-                  ),
-                ],
+                ),
               ),
-            ),
-          ),
+            );
+          },
         ),
       ),
     );
   }
+
+  /// My ID, then the form to reach someone.
+  List<Widget> _conversationColumn() => [
+    ListenableBuilder(
+      listenable: Listenable.merge([_connection, _privacy]),
+      builder: (context, _) => _IdCard(
+        id: _connection.myId,
+        privacy: _privacy,
+        onCopy: _copyId,
+        onRegenerate: _regenerate,
+      ),
+    ),
+    const SizedBox(height: 32),
+    const _SectionTitle(
+      title: 'Nouvelle conversation',
+      subtitle: "Entrez l'ID de la personne à joindre.",
+    ),
+    const SizedBox(height: 12),
+    Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            TextField(
+              key: const Key('peer-id'),
+              controller: _peerController,
+              keyboardType: TextInputType.number,
+              inputFormatters: [
+                FilteringTextInputFormatter.allow(RegExp(r'[0-9 \-]')),
+              ],
+              style: const TextStyle(
+                fontFeatures: [FontFeature.tabularFigures()],
+                letterSpacing: 1,
+              ),
+              decoration: InputDecoration(
+                labelText: "ID de l'interlocuteur",
+                hintText: '123 456 789',
+                prefixIcon: const Icon(Icons.tag_rounded),
+                errorText: _peerError,
+              ),
+              onSubmitted: (_) => _connect(),
+            ),
+            const SizedBox(height: 12),
+            ListenableBuilder(
+              listenable: _connection,
+              builder: (context, _) {
+                final pending = _connection.pendingRequest;
+                return AnimatedSwitcher(
+                  duration: const Duration(milliseconds: 200),
+                  // Full width (the default centers the child).
+                  layoutBuilder: (current, previous) => Stack(
+                    children: [
+                      ...previous,
+                      if (current != null)
+                        SizedBox(width: double.infinity, child: current),
+                    ],
+                  ),
+                  child: pending != null
+                      ? _PendingRequestCard(
+                          key: ValueKey(pending),
+                          peerLabel: _label(pending),
+                          onCancel: _connection.cancelRequest,
+                        )
+                      : FilledButton.icon(
+                          key: const Key('connect'),
+                          icon: const Icon(Icons.arrow_forward_rounded),
+                          label: const Text('Se connecter'),
+                          onPressed:
+                              _connection.status == ServerStatus.online
+                              ? _connect
+                              : null,
+                        ),
+                );
+              },
+            ),
+          ],
+        ),
+      ),
+    ),
+  ];
+
+  /// Saved contacts, with their presence.
+  List<Widget> _contactsColumn() => [
+    Row(
+      crossAxisAlignment: CrossAxisAlignment.end,
+      children: [
+        const Expanded(
+          child: _SectionTitle(
+            title: 'Contacts',
+            subtitle: 'Sur cet appareil uniquement.',
+          ),
+        ),
+        ListenableBuilder(
+          listenable: _privacy,
+          builder: (context, _) => IconButton(
+            key: const Key('reveal-contact-ids'),
+            tooltip: _privacy.showContacts ? 'Masquer les ID' : 'Afficher les ID',
+            icon: Icon(
+              _privacy.showContacts
+                  ? Icons.visibility_off_outlined
+                  : Icons.visibility_outlined,
+            ),
+            onPressed: _privacy.toggleContacts,
+          ),
+        ),
+        TextButton.icon(
+          key: const Key('add-contact'),
+          icon: const Icon(Icons.person_add_alt_1_rounded),
+          label: const Text('Ajouter'),
+          onPressed: _addContact,
+        ),
+      ],
+    ),
+    const SizedBox(height: 12),
+    ListenableBuilder(
+      listenable: Listenable.merge([_contacts, _connection, _privacy]),
+      builder: (context, _) => _ContactList(
+        contacts: _contacts.contacts,
+        displayId: _privacy.contact,
+        isOnline: _connection.isOnline,
+        canConnect:
+            _connection.status == ServerStatus.online &&
+            _connection.pendingRequest == null,
+        onConnect: (c) => _connection.requestChat(c.id),
+        onRename: _renameContact,
+        onRemove: _removeContact,
+      ),
+    ),
+  ];
 }
 
 /// Hero card: my ID, on the brand gradient.

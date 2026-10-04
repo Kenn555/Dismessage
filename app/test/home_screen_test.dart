@@ -137,4 +137,69 @@ void main() {
     expect(ServerSettings(store).serverUri, expected, reason: 'persisted');
     await cleanUp(tester);
   });
+
+  group('layout', () {
+    Future<void> pumpAt(WidgetTester tester, Size size) async {
+      tester.view.physicalSize = size;
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.reset);
+      final contacts = ContactsService(store);
+      for (var i = 0; i < 20; i++) {
+        await contacts.save('${100000000 + i}', 'Contact $i');
+      }
+      settings = ServerSettings(store, fallback: Uri.parse('ws://x/ws'));
+      connection = ConnectionService(
+        identity: IdentityService(store),
+        serverUri: settings.serverUri,
+        connect: (_) => UnreachableChannel(),
+        reconnectDelay: const Duration(hours: 1),
+      );
+      await tester.pumpWidget(
+        MaterialApp(
+          home: HomeScreen(
+            connection: connection,
+            settings: settings,
+            contacts: contacts,
+          ),
+        ),
+      );
+      await connection.start();
+      await tester.pump();
+    }
+
+    testWidgets('wide screen: contacts in a right column that scrolls alone', (
+      tester,
+    ) async {
+      await pumpAt(tester, const Size(1280, 800));
+      expect(find.byKey(const Key('home-two-columns')), findsOneWidget);
+      final idCard = find.byKey(const Key('my-id'));
+      final contactsTitle = find.text('Contacts');
+      expect(
+        tester.getTopLeft(contactsTitle).dx,
+        greaterThan(tester.getTopRight(idCard).dx),
+      );
+      expect(
+        tester.getTopLeft(contactsTitle).dy,
+        lessThan(tester.getBottomLeft(idCard).dy),
+        reason: 'side by side, not stacked',
+      );
+
+      final idBefore = tester.getTopLeft(idCard);
+      final titleBefore = tester.getTopLeft(contactsTitle);
+      await tester.drag(
+        find.byKey(const Key('home-right-column')),
+        const Offset(0, -300),
+      );
+      await tester.pump();
+      expect(tester.getTopLeft(contactsTitle).dy, lessThan(titleBefore.dy));
+      expect(tester.getTopLeft(idCard), idBefore, reason: 'left stays put');
+      await cleanUp(tester);
+    });
+
+    testWidgets('narrow screen: a single column', (tester) async {
+      await pumpAt(tester, const Size(700, 800));
+      expect(find.byKey(const Key('home-two-columns')), findsNothing);
+      await cleanUp(tester);
+    });
+  });
 }
