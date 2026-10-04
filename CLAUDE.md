@@ -85,7 +85,7 @@ Le serveur sert à la fois le relais (`/ws`) et le client web (`app/build/web`, 
 4. Windows et Android : bouton **Serveur** de l'accueil, puis coller le même lien. Il est converti en `wss://…/ws` (`ServerAddress.parse`) et mémorisé.
    Ou bien, à la compilation : `--dart-define=SERVER_URL=https://xxxx-8080…`.
 
-Le tunnel est lent (10 à 20 Ko/s mesurés) : le serveur compresse les fichiers statiques en gzip (`gzip_middleware.dart`), et `web/index.html` affiche un écran de chargement jusqu'au premier rendu Flutter (`web/flutter_bootstrap.js`). Il faut compter environ 1 minute au premier chargement, puis le cache du navigateur prend le relais.
+Le tunnel est lent (10 à 20 Ko/s mesurés) : le serveur compresse les fichiers statiques en gzip (`gzip_middleware.dart`) et les sert avec `Cache-Control: no-cache` (le navigateur garde sa copie mais vérifie qu'elle est à jour : un `304` si rien n'a changé). Sans cet en-tête, un navigateur réutilisait l'ancienne police d'icônes (même nom à chaque compilation, réduite aux icônes utilisées) et les nouvelles icônes restaient vides, et `web/index.html` affiche un écran de chargement jusqu'au premier rendu Flutter (`web/flutter_bootstrap.js`). Il faut compter environ 1 minute au premier chargement, puis le cache du navigateur prend le relais.
 
 Le tunnel tourne sur ta machine : si le PC s'éteint ou si VS Code est fermé, plus personne ne peut se connecter.
 

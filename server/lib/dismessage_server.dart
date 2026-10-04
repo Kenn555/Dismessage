@@ -45,6 +45,7 @@ Future<HttpServer> serve(
 
   final web = webRoot != null && Directory(webRoot).existsSync()
       ? const Pipeline()
+            .addMiddleware(_revalidate)
             .addMiddleware(gzipMiddleware())
             .addHandler(
               createStaticHandler(webRoot, defaultDocument: 'index.html'),
@@ -58,6 +59,15 @@ Future<HttpServer> serve(
   };
   return shelf_io.serve(handler, address, port);
 }
+
+/// The client files keep their names from one build to the next (e.g. the
+/// icon font, trimmed to the icons in use). Without this header browsers
+/// guess a cache lifetime and keep an old copy: new icons then show blank.
+/// "no-cache" still caches, but asks first; unchanged files cost a 304.
+Handler _revalidate(Handler inner) => (request) async {
+  final response = await inner(request);
+  return response.change(headers: {'cache-control': 'no-cache'});
+};
 
 /// Convenience to build a relay backed by the JSON ID file.
 Future<Relay> relayWithFileStore(

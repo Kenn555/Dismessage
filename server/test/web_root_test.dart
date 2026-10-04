@@ -53,6 +53,32 @@ void main() {
     expect(await get(port, '/health'), (200, 'ok'));
   });
 
+  test('browsers revalidate client files instead of reusing them', () async {
+    // Same file names on every build: a stale icon font showed blank icons.
+    final port = await start(web.path);
+    final client = HttpClient();
+    try {
+      final first = await (await client.get(
+        'localhost',
+        port,
+        '/main.dart.js',
+      )).close();
+      await first.drain<void>();
+      expect(first.headers.value('cache-control'), 'no-cache');
+      final modified = first.headers.value('last-modified');
+      expect(modified, isNotNull);
+
+      // Unchanged: the browser's check costs a body-less 304.
+      final check = await client.get('localhost', port, '/main.dart.js');
+      check.headers.set(HttpHeaders.ifModifiedSinceHeader, modified!);
+      final answer = await check.close();
+      await answer.drain<void>();
+      expect(answer.statusCode, HttpStatus.notModified);
+    } finally {
+      client.close(force: true);
+    }
+  });
+
   test('without a web build, only the relay answers', () async {
     final port = await start('${web.path}/missing');
     expect((await get(port, '/')).$1, 404);
