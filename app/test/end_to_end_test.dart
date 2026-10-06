@@ -47,12 +47,12 @@ void main() {
     });
     a.requestChat(b.myId!);
     await waitFor(
-      () => a.session != null && b.session != null,
+      () => a.sessions.isNotEmpty && b.sessions.isNotEmpty,
       reason: 'session started',
     );
     await sub.cancel();
-    expect(a.session!.peer, b.myId);
-    expect(b.session!.peer, a.myId);
+    expect(a.sessions.single.peer, b.myId);
+    expect(b.sessions.single.peer, a.myId);
   }
 
   setUp(() async {
@@ -71,24 +71,59 @@ void main() {
     await server.close(force: true);
   });
 
+  test('A talks to B and C at the same time, isolated', () async {
+    final a = await startClient();
+    final b = await startClient();
+    final c = await startClient();
+    await pair(a, b);
+    // C asks A while A is talking to B.
+    final sub = a.events.listen((event) {
+      if (event is IncomingRequestEvent) a.accept(event.from);
+    });
+    c.requestChat(a.myId!);
+    await waitFor(() => a.sessions.length == 2 && c.sessions.isNotEmpty);
+    await sub.cancel();
+
+    final withB = a.liveSessionWith(b.myId!)!;
+    final withC = a.liveSessionWith(c.myId!)!;
+    expect(withB.peerLeft, isFalse, reason: 'B is still there');
+    b.sessions.single.updateDraft('pour A de B');
+    c.sessions.single.updateDraft('pour A de C');
+    await waitFor(
+      () =>
+          withB.remoteDraft == 'pour A de B' &&
+          withC.remoteDraft == 'pour A de C',
+      reason: 'both drafts',
+    );
+
+    withC.updateDraft('réponse à C');
+    expect(withC.sendMessage(), isTrue);
+    await waitFor(() => c.sessions.single.messages.isNotEmpty);
+    expect(b.sessions.single.messages, isEmpty);
+
+    a.closeSession(withB);
+    await waitFor(() => b.sessions.single.peerLeft, reason: 'B told');
+    expect(c.sessions.single.peerLeft, isFalse);
+  });
+
   test('B sees A typing live, then receives the message', () async {
     final a = await startClient();
     final b = await startClient();
     await pair(a, b);
 
     final seenByB = <String>[];
-    b.session!.addListener(() {
-      final draft = b.session!.remoteDraft;
+    b.sessions.single.addListener(() {
+      final draft = b.sessions.single.remoteDraft;
       if (seenByB.isEmpty || seenByB.last != draft) seenByB.add(draft);
     });
 
     const typed = 'Bonjour 👋';
     final chars = typed.runes.map(String.fromCharCode).toList();
     for (var i = 1; i <= chars.length; i++) {
-      a.session!.updateDraft(chars.take(i).join());
+      a.sessions.single.updateDraft(chars.take(i).join());
       await Future<void>.delayed(const Duration(milliseconds: 40));
     }
-    await waitFor(() => b.session!.remoteDraft == typed, reason: 'live draft');
+    await waitFor(() => b.sessions.single.remoteDraft == typed, reason: 'live draft');
 
     // B saw the text grow progressively, never something else.
     expect(seenByB.length, greaterThan(3));
@@ -96,12 +131,12 @@ void main() {
       expect(typed.startsWith(snapshot), isTrue, reason: snapshot);
     }
 
-    expect(a.session!.sendMessage(), isTrue);
-    await waitFor(() => b.session!.messages.isNotEmpty, reason: 'message');
-    expect((b.session!.messages.single as ChatMessage).text, typed);
-    expect(b.session!.messages.single.fromMe, isFalse);
-    expect(b.session!.remoteDraft, '');
-    expect(a.session!.messages.single.fromMe, isTrue);
+    expect(a.sessions.single.sendMessage(), isTrue);
+    await waitFor(() => b.sessions.single.messages.isNotEmpty, reason: 'message');
+    expect((b.sessions.single.messages.single as ChatMessage).text, typed);
+    expect(b.sessions.single.messages.single.fromMe, isFalse);
+    expect(b.sessions.single.remoteDraft, '');
+    expect(a.sessions.single.messages.single.fromMe, isTrue);
   });
 
   test('corrections in the middle are mirrored', () async {
@@ -109,20 +144,20 @@ void main() {
     final b = await startClient();
     await pair(a, b);
     for (final t in ['le chat', 'le chat noir', 'le chien noir', 'le chien']) {
-      a.session!.updateDraft(t);
+      a.sessions.single.updateDraft(t);
       await Future<void>.delayed(const Duration(milliseconds: 50));
     }
-    await waitFor(() => b.session!.remoteDraft == 'le chien');
-    a.session!.updateDraft('');
-    await waitFor(() => b.session!.remoteDraft == '', reason: 'cleared');
+    await waitFor(() => b.sessions.single.remoteDraft == 'le chien');
+    a.sessions.single.updateDraft('');
+    await waitFor(() => b.sessions.single.remoteDraft == '', reason: 'cleared');
   });
 
   test('leaving the chat notifies the peer', () async {
     final a = await startClient();
     final b = await startClient();
     await pair(a, b);
-    a.leaveSession();
-    await waitFor(() => b.session!.peerLeft, reason: 'peer left');
+    a.closeSession(a.sessions.single);
+    await waitFor(() => b.sessions.single.peerLeft, reason: 'peer left');
   });
 
   test('the ID survives a restart of the app', () async {
@@ -216,14 +251,14 @@ void main() {
         ..b = (seed >> 16) & 0xff;
     }
     final encoded = ImageCodec.encode(img.encodePng(picture));
-    final sent = a.session!.sendImage(encoded)!;
+    final sent = a.sessions.single.sendImage(encoded)!;
 
-    await waitFor(() => b.session!.messages.isNotEmpty, reason: 'offer');
-    final received = b.session!.messages.single as ChatImage;
+    await waitFor(() => b.sessions.single.messages.isNotEmpty, reason: 'offer');
+    final received = b.sessions.single.messages.single as ChatImage;
     expect(received.status, ImageStatus.blurred);
     expect(received.bytes, isNull);
 
-    b.session!.openImage(received);
+    b.sessions.single.openImage(received);
     await waitFor(
       () => received.status == ImageStatus.opened,
       reason: 'full image',

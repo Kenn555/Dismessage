@@ -6,18 +6,16 @@ import 'package:flutter/services.dart';
 
 import '../../config.dart';
 import '../../services/background_mode.dart';
+import '../../services/chat_session.dart';
 import '../../services/connection_service.dart';
 import '../../services/contacts_service.dart';
 import '../../services/id_privacy.dart';
 import '../../theme/app_theme.dart';
-import '../../widgets/contact_avatar.dart';
 import '../../widgets/contact_dialog.dart';
 import '../../widgets/dismessage_logo.dart';
-import '../chat/chat_screen.dart';
-
-/// From this width (computer, tablet in landscape), the home screen splits in
-/// two columns: my ID and the new conversation form, then the contacts.
-const double kHomeTwoColumnsWidth = 840;
+import '../../widgets/presence_avatar.dart';
+import '../../widgets/session_tile.dart';
+import '../chat/chats_shell.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({
@@ -27,6 +25,7 @@ class HomeScreen extends StatefulWidget {
     required this.contacts,
     this.privacy,
     this.background,
+    this.buildChat,
   });
 
   final ConnectionService connection;
@@ -39,6 +38,9 @@ class HomeScreen extends StatefulWidget {
   /// Android background mode; no settings button when null or unsupported.
   final BackgroundMode? background;
 
+  /// Builds a conversation screen (tests inject fake hardware).
+  final ChatScreenBuilder? buildChat;
+
   @override
   State<HomeScreen> createState() => _HomeScreenState();
 }
@@ -47,6 +49,9 @@ class _HomeScreenState extends State<HomeScreen> {
   final _peerController = TextEditingController();
   late final StreamSubscription<ConnectionEvent> _events;
   String? _peerError;
+
+  /// Whether the conversations route is on the stack.
+  bool _shellOpen = false;
 
   /// Open incoming-request dialogs, by requester ID.
   final Map<String, BuildContext> _incomingDialogs = {};
@@ -62,8 +67,39 @@ class _HomeScreenState extends State<HomeScreen> {
   void initState() {
     super.initState();
     _events = _connection.events.listen(_onEvent);
+    _connection.addListener(_showActive);
     _contacts.addListener(_watchContacts);
     _watchContacts();
+  }
+
+  /// One path to the conversations: a new session, a tap on a notification,
+  /// an open conversation or a contact already in one all activate it.
+  void _showActive() {
+    if (_shellOpen || !mounted || _connection.active == null) return;
+    _shellOpen = true;
+    Navigator.of(context)
+        .push(
+          MaterialPageRoute<void>(
+            settings: const RouteSettings(name: ChatsShell.routeName),
+            builder: (_) => ChatsShell(
+              connection: _connection,
+              contacts: _contacts,
+              privacy: _privacy,
+              buildChat: widget.buildChat,
+            ),
+          ),
+        )
+        .whenComplete(() => _shellOpen = false);
+  }
+
+  /// Talks to [peer]: the open conversation if any, a request otherwise.
+  void _reach(String peer) {
+    final live = _connection.liveSessionWith(peer);
+    if (live != null) {
+      _connection.activate(live);
+    } else {
+      _connection.requestChat(peer);
+    }
   }
 
   /// Follows whether each saved contact is online.
@@ -73,6 +109,7 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   void dispose() {
     _contacts.removeListener(_watchContacts);
+    _connection.removeListener(_showActive);
     _events.cancel();
     _peerController.dispose();
     super.dispose();
@@ -83,18 +120,9 @@ class _HomeScreenState extends State<HomeScreen> {
     switch (event) {
       case IncomingRequestEvent(:final from):
         _showIncomingRequest(from);
-      case SessionStartedEvent(:final session):
-        Navigator.of(context).popUntil((route) => route.isFirst);
-        Navigator.of(context).push(
-          MaterialPageRoute<void>(
-            builder: (_) => ChatScreen(
-              session: session,
-              connection: _connection,
-              contacts: _contacts,
-              privacy: _privacy,
-            ),
-          ),
-        );
+      case SessionStartedEvent():
+        // Already shown: the new session is the active one.
+        break;
       case PeerOfflineEvent(:final peer):
         _snack('${_label(peer)} est hors ligne.');
       case RequestRejectedEvent(:final peer):
@@ -164,7 +192,7 @@ class _HomeScreenState extends State<HomeScreen> {
       return;
     }
     setState(() => _peerError = null);
-    _connection.requestChat(peer);
+    _reach(peer);
   }
 
   Future<void> _addContact() async {
@@ -314,7 +342,7 @@ class _HomeScreenState extends State<HomeScreen> {
       body: SafeArea(
         child: LayoutBuilder(
           builder: (context, constraints) {
-            final wide = constraints.maxWidth >= kHomeTwoColumnsWidth;
+            final wide = constraints.maxWidth >= kWideLayoutWidth;
             final banner = ListenableBuilder(
               listenable: _connection,
               builder: (context, _) =>
@@ -391,8 +419,13 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  /// My ID, then the form to reach someone.
+  /// Open conversations (if any), my ID, then the form to reach someone.
   List<Widget> _conversationColumn() => [
+    _OpenSessions(
+      connection: _connection,
+      contacts: _contacts,
+      onOpen: _connection.activate,
+    ),
     ListenableBuilder(
       listenable: Listenable.merge([_connection, _privacy]),
       builder: (context, _) => _IdCard(
@@ -511,15 +544,72 @@ class _HomeScreenState extends State<HomeScreen> {
         contacts: _contacts.contacts,
         displayId: _privacy.contact,
         isOnline: _connection.isOnline,
-        canConnect:
-            _connection.status == ServerStatus.online &&
-            _connection.pendingRequest == null,
-        onConnect: (c) => _connection.requestChat(c.id),
+        canConnect: (id) =>
+            _connection.liveSessionWith(id) != null ||
+            (_connection.status == ServerStatus.online &&
+                _connection.pendingRequest == null),
+        onConnect: (c) => _reach(c.id),
         onRename: _renameContact,
         onRemove: _removeContact,
       ),
     ),
   ];
+}
+
+/// The conversations still open, to go back to them.
+class _OpenSessions extends StatelessWidget {
+  const _OpenSessions({
+    required this.connection,
+    required this.contacts,
+    required this.onOpen,
+  });
+
+  final ConnectionService connection;
+  final ContactsService contacts;
+  final void Function(ChatSession) onOpen;
+
+  @override
+  Widget build(BuildContext context) {
+    return ListenableBuilder(
+      listenable: connection,
+      builder: (context, _) {
+        final sessions = connection.sessions;
+        if (sessions.isEmpty) return const SizedBox.shrink();
+        return ListenableBuilder(
+          listenable: Listenable.merge([contacts, ...sessions]),
+          builder: (context, _) => Column(
+            key: const Key('open-sessions'),
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              const _SectionTitle(
+                title: 'Conversations en cours',
+                subtitle: 'Touchez pour reprendre.',
+              ),
+              const SizedBox(height: 12),
+              Card(
+                clipBehavior: Clip.antiAlias,
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 4),
+                  child: Column(
+                    children: [
+                      for (final session in sessions)
+                        SessionTile(
+                          session: session,
+                          name: contacts.byId(session.peer)?.name,
+                          onTap: () => onOpen(session),
+                          onClose: () => connection.closeSession(session),
+                        ),
+                    ],
+                  ),
+                ),
+              ),
+              const SizedBox(height: 32),
+            ],
+          ),
+        );
+      },
+    );
+  }
 }
 
 /// Hero card: my ID, on the brand gradient.
@@ -682,7 +772,10 @@ class _ContactList extends StatelessWidget {
 
   /// Presence of a contact; null while unknown.
   final bool? Function(String id) isOnline;
-  final bool canConnect;
+
+  /// Whether tapping the contact does something (open conversation, or a
+  /// request can be sent).
+  final bool Function(String id) canConnect;
   final void Function(Contact) onConnect;
   final void Function(Contact) onRename;
   final void Function(Contact) onRemove;
@@ -727,8 +820,9 @@ class _ContactList extends StatelessWidget {
             ListTile(
               key: ValueKey('contact-${contact.id}'),
               contentPadding: const EdgeInsets.fromLTRB(16, 4, 4, 4),
-              leading: _PresenceAvatar(
-                contact: contact,
+              leading: PresenceAvatar(
+                id: contact.id,
+                name: contact.name,
                 online: isOnline(contact.id),
               ),
               title: Text(contact.name, style: theme.textTheme.titleMedium),
@@ -746,7 +840,7 @@ class _ContactList extends StatelessWidget {
                   fontFeatures: [FontFeature.tabularFigures()],
                 ),
               ),
-              enabled: canConnect,
+              enabled: canConnect(contact.id),
               onTap: () => onConnect(contact),
               trailing: PopupMenuButton<String>(
                 key: ValueKey('contact-menu-${contact.id}'),
@@ -763,47 +857,6 @@ class _ContactList extends StatelessWidget {
           ],
         ],
       ),
-    );
-  }
-}
-
-/// Contact avatar with a green (online) or grey (offline) dot; no dot
-/// while the presence is unknown.
-class _PresenceAvatar extends StatelessWidget {
-  const _PresenceAvatar({required this.contact, required this.online});
-
-  final Contact contact;
-  final bool? online;
-
-  @override
-  Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    final online = this.online;
-    return Stack(
-      clipBehavior: Clip.none,
-      children: [
-        ContactAvatar(id: contact.id, name: contact.name),
-        if (online != null)
-          Positioned(
-            right: -1,
-            bottom: -1,
-            child: Semantics(
-              label: online ? 'En ligne' : 'Hors ligne',
-              child: Container(
-                key: ValueKey(
-                  'presence-${contact.id}-${online ? 'on' : 'off'}',
-                ),
-                width: 14,
-                height: 14,
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  color: online ? AppTheme.online : scheme.outline,
-                  border: Border.all(color: scheme.surface, width: 2.5),
-                ),
-              ),
-            ),
-          ),
-      ],
     );
   }
 }

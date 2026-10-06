@@ -397,6 +397,29 @@ void main() {
       expect(relay.onlineCount, 2, reason: 'both stay online');
     });
 
+    test('one client in two sessions at once, each isolated', () async {
+      final a = await (await client()).register(idA);
+      final b = await (await client()).register(idB);
+      final c = await (await client()).register(idC);
+      final withB = await pair(a, b);
+      final withC = await pair(a, c);
+      expect(withC, isNot(withB));
+      expect(relay.sessionCount, 2);
+
+      a.send(DraftSnapshotFrame(sid: withB, seq: 1, text: 'pour B'));
+      expect((await b.expectNext<DraftSnapshotFrame>()).text, 'pour B');
+      await c.expectSilence();
+      c.send(DraftSnapshotFrame(sid: withC, seq: 1, text: 'de C'));
+      final fromC = await a.expectNext<DraftSnapshotFrame>();
+      expect(fromC.sid, withC);
+      expect(fromC.text, 'de C');
+
+      a.send(SessionLeaveFrame(sid: withB));
+      expect((await b.expectNext<PeerLeftFrame>()).sid, withB);
+      await c.expectSilence();
+      expect(relay.sessionCount, 1);
+    });
+
     test('disconnect sends peer_left and ends the session', () async {
       final a = await (await client()).register(idA);
       final b = await (await client()).register(idB);

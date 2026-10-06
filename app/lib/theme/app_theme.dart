@@ -2,6 +2,10 @@ import 'package:flutter/material.dart';
 
 import '../branding/logo_geometry.dart';
 
+/// From this width (computer, tablet in landscape), wide layouts: the home
+/// screen in two columns, the open conversations in a sidebar.
+const double kWideLayoutWidth = 840;
+
 /// Brand colors and the light/dark themes built from them.
 abstract final class AppTheme {
   static const brand = Color(LogoGeometry.gradientStart);

@@ -94,15 +94,15 @@ Future<void> main() async {
       if (e is IncomingRequestEvent) peer.accept(e.from);
     });
     me.requestChat(peer.myId!);
-    await waitFor(() => me.session != null, 'session');
+    await waitFor(() => me.sessions.isNotEmpty, 'session');
     await sub.cancel();
-    final sid = me.session!.sid;
+    final sid = me.sessions.single.sid;
 
     // The app is not visible: notify.
     notifications.appVisible = false;
 
-    peer.session!.updateDraft('Salut, tu');
-    await waitFor(() => me.session!.remoteDraft == 'Salut, tu', 'draft');
+    peer.sessions.single.updateDraft('Salut, tu');
+    await waitFor(() => me.sessions.single.remoteDraft == 'Salut, tu', 'draft');
     await Future<void>.delayed(const Duration(milliseconds: 500));
     var history = await toastHistory();
     check(
@@ -110,7 +110,7 @@ Future<void> main() async {
       'la frappe est annoncée, avec un champ de réponse ($history)',
     );
 
-    peer.session!.updateDraft('Salut, tu es là ?');
+    peer.sessions.single.updateDraft('Salut, tu es là ?');
     await Future<void>.delayed(const Duration(milliseconds: 700));
     history = await toastHistory();
     check(
@@ -118,8 +118,8 @@ Future<void> main() async {
       'mise à jour sur place : toujours un seul toast ($history)',
     );
 
-    peer.session!.sendMessage();
-    await waitFor(() => me.session!.messages.isNotEmpty, 'message');
+    peer.sessions.single.sendMessage();
+    await waitFor(() => me.sessions.single.messages.isNotEmpty, 'message');
     await Future<void>.delayed(const Duration(milliseconds: 500));
     history = await toastHistory();
     check(history.join() == '$sid|True|False', 'le message remplace la frappe');
@@ -133,7 +133,7 @@ Future<void> main() async {
     // a toast. The channel → Dart path is the same as for a real click.
     notifications.appVisible = false;
     notifications.onReply(sid, 'Oui !');
-    await waitFor(() => peer.session!.messages.length == 1, 'reply');
+    await waitFor(() => peer.sessions.single.messages.length == 1, 'reply');
     check(true, 'la réponse depuis le toast est envoyée');
 
     // A request while the app is hidden: a toast with Accept / Refuse.

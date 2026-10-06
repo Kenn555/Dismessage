@@ -58,6 +58,7 @@ class ChatScreen extends StatefulWidget {
     this.createRecorder = platformVoiceRecorder,
     this.createAudioBackend = platformAudioBackend,
     this.privacy,
+    this.active = true,
   });
 
   final ChatSession session;
@@ -77,6 +78,9 @@ class ChatScreen extends StatefulWidget {
 
   /// Which IDs are shown in full (a saved contact's is masked by default).
   final IdPrivacy? privacy;
+
+  /// Whether this conversation is the one on screen (several stay built).
+  final bool active;
 
   @override
   State<ChatScreen> createState() => _ChatScreenState();
@@ -100,6 +104,15 @@ class _ChatScreenState extends State<ChatScreen> {
   String? _highlighted;
   Timer? _highlightTimer;
 
+  /// Bubbles already laid out, to scroll only when one is added.
+  int _shownCount = 0;
+
+  /// The list is scrolled up: show the "jump to the bottom" button.
+  final _scrolledUp = ValueNotifier(false);
+
+  /// Bubbles arrived below while scrolled up.
+  final _newBelow = ValueNotifier(false);
+
   VoiceRecorder? _recorder;
   bool _recording = false;
   final _recordClock = Stopwatch();
@@ -111,13 +124,22 @@ class _ChatScreenState extends State<ChatScreen> {
   @override
   void initState() {
     super.initState();
-    _session.addListener(_scrollToBottom);
+    _shownCount = _session.messages.length;
+    _session.addListener(_onSessionChanged);
+    _scroll.addListener(_onScroll);
     _player.addListener(_onPlayerChanged);
+    _scrollToBottom();
+  }
+
+  @override
+  void didUpdateWidget(ChatScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.active && !oldWidget.active) _refocus();
   }
 
   @override
   void dispose() {
-    _session.removeListener(_scrollToBottom);
+    _session.removeListener(_onSessionChanged);
     _player
       ..removeListener(_onPlayerChanged)
       ..dispose();
@@ -131,7 +153,51 @@ class _ChatScreenState extends State<ChatScreen> {
     _input.dispose();
     _focus.dispose();
     _scroll.dispose();
+    _scrolledUp.dispose();
+    _newBelow.dispose();
     super.dispose();
+  }
+
+  /// Follows new bubbles only: the peer's typing lives outside the list
+  /// and never moves it. Scrolled up, a received bubble does not pull the
+  /// user down (the button shows it); my own always does.
+  void _onSessionChanged() {
+    final entries = _session.messages;
+    if (entries.length <= _shownCount) {
+      _shownCount = entries.length;
+      return;
+    }
+    _shownCount = entries.length;
+    final atBottom =
+        !_scroll.hasClients || _scroll.position.extentAfter < _bottomSlack;
+    if (entries.last.fromMe || atBottom) {
+      _scrollToBottom();
+    } else {
+      _newBelow.value = true;
+    }
+  }
+
+  /// Distance from the bottom still considered "at the bottom".
+  static const _bottomSlack = 80.0;
+
+  void _onScroll() {
+    final up = _scroll.position.extentAfter > _bottomSlack * 2;
+    _scrolledUp.value = up;
+    if (!up) _newBelow.value = false;
+  }
+
+  /// The cursor always comes back to the input after an action (emoji,
+  /// photo, voice, reply…).
+  void _refocus() {
+    if (!mounted || !widget.active || _session.peerLeft) return;
+    _focus.requestFocus();
+  }
+
+  void _toggleEmojis() {
+    setState(() => _showEmojis = !_showEmojis);
+    _refocus();
+    // Back to the keyboard: the field already had the focus, show it.
+    if (!_showEmojis) SystemChannels.textInput.invokeMethod('TextInput.show');
   }
 
   void _scrollToBottom() {
@@ -168,7 +234,7 @@ class _ChatScreenState extends State<ChatScreen> {
       _input.clear();
       setState(() => _replyTo = null);
     }
-    _focus.requestFocus();
+    _refocus();
   }
 
   /// Inserts [emoji] at the cursor (or replaces the selection).
@@ -178,7 +244,7 @@ class _ChatScreenState extends State<ChatScreen> {
         ? value.selection
         : TextSelection.collapsed(offset: value.text.length);
     final text = value.text.replaceRange(selection.start, selection.end, emoji);
-    if (text.length > kMaxTextLength) return;
+    if (text.length > kMaxTextLength) return _refocus();
     _input.value = TextEditingValue(
       text: text,
       selection: TextSelection.collapsed(
@@ -187,6 +253,7 @@ class _ChatScreenState extends State<ChatScreen> {
     );
     // Programmatic changes do not trigger onChanged: stream it ourselves.
     _session.updateDraft(text);
+    _refocus();
   }
 
   /// Camera or gallery from the same button (gallery only without camera).
@@ -217,7 +284,7 @@ class _ChatScreenState extends State<ChatScreen> {
           ),
         ),
       );
-      if (picked == null) return;
+      if (picked == null) return _refocus();
       source = picked;
     }
     await _sendImage(source);
@@ -259,6 +326,7 @@ class _ChatScreenState extends State<ChatScreen> {
       );
     } finally {
       if (mounted) setState(() => _preparingImage = false);
+      _refocus();
     }
   }
 
@@ -296,6 +364,7 @@ class _ChatScreenState extends State<ChatScreen> {
     _recordTicker?.cancel();
     _recordClock.stop();
     setState(() => _recording = false);
+    _refocus();
     if (!send) {
       await recorder.cancel();
       return;
@@ -320,7 +389,7 @@ class _ChatScreenState extends State<ChatScreen> {
   void _startReply(ChatEntry entry) {
     if (_session.peerLeft) return;
     setState(() => _replyTo = entry);
-    _focus.requestFocus();
+    _refocus();
   }
 
   Future<void> _showActions(ChatEntry entry) async {
@@ -335,6 +404,7 @@ class _ChatScreenState extends State<ChatScreen> {
       currentReaction: entry.fromMe ? null : entry.reaction,
     );
     if (!mounted) return;
+    _refocus();
     switch (action) {
       case ReactAction(:final emoji):
         _session.react(entry, emoji);
@@ -422,26 +492,16 @@ class _ChatScreenState extends State<ChatScreen> {
     );
     if (draft == null) return;
     await widget.contacts.save(draft.id, draft.name);
+    _refocus();
     if (!mounted || existing != null) return;
     _snack('${draft.name} ajouté aux contacts.');
   }
 
-  void _onPop(bool didPop, Object? _) {
-    // A newer session may already have replaced this one.
-    if (didPop && widget.connection.session == _session) {
-      widget.connection.leaveSession();
-    }
-  }
+  /// Leaves (or, once the peer is gone, closes) this conversation.
+  void _close() => widget.connection.closeSession(_session);
 
   @override
   Widget build(BuildContext context) {
-    return PopScope(
-      onPopInvokedWithResult: _onPop,
-      child: _buildScaffold(context),
-    );
-  }
-
-  Widget _buildScaffold(BuildContext context) {
     final theme = Theme.of(context);
     return Scaffold(
       appBar: AppBar(
@@ -525,14 +585,24 @@ class _ChatScreenState extends State<ChatScreen> {
               );
             },
           ),
+          ListenableBuilder(
+            listenable: _session,
+            builder: (context, _) => IconButton(
+              key: const Key('close-session'),
+              tooltip: _session.peerLeft
+                  ? 'Fermer la conversation'
+                  : 'Quitter la conversation',
+              icon: const Icon(Icons.logout_rounded),
+              onPressed: _close,
+            ),
+          ),
           const SizedBox(width: 8),
         ],
       ),
       body: ListenableBuilder(
         listenable: _session,
         builder: (context, _) {
-          final empty =
-              _session.messages.isEmpty && _session.remoteDraft.isEmpty;
+          final empty = _session.messages.isEmpty;
           return Column(
             children: [
               if (_session.peerLeft)
@@ -541,35 +611,91 @@ class _ChatScreenState extends State<ChatScreen> {
                   leading: const Icon(Icons.link_off_rounded),
                   actions: [
                     TextButton(
-                      onPressed: () => Navigator.of(context).maybePop(),
-                      child: const Text('Retour'),
+                      key: const Key('banner-close'),
+                      onPressed: _close,
+                      child: const Text('Fermer'),
                     ),
                   ],
                 ),
               Expanded(
                 child: empty
                     ? const _EmptyConversation()
-                    // Not lazy: every bubble must exist to jump to a quote.
-                    : SingleChildScrollView(
-                        controller: _scroll,
-                        padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.stretch,
-                          children: [
-                            for (final entry in _session.messages)
-                              _bubble(entry),
-                            LiveDraftBubble(text: _session.remoteDraft),
-                          ],
-                        ),
+                    : Stack(
+                        children: [
+                          // Not lazy: every bubble must exist to jump to a
+                          // quote.
+                          SingleChildScrollView(
+                            key: const Key('chat-list'),
+                            controller: _scroll,
+                            padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.stretch,
+                              children: [
+                                for (final entry in _session.messages)
+                                  _bubble(entry),
+                              ],
+                            ),
+                          ),
+                          Positioned(
+                            right: 16,
+                            bottom: 8,
+                            child: _JumpToBottom(
+                              visible: _scrolledUp,
+                              fresh: _newBelow,
+                              onPressed: _jumpToBottom,
+                            ),
+                          ),
+                        ],
                       ),
               ),
-              if (_replyTo != null && !_session.peerLeft) _replyBar(context),
-              _composer(context),
-              if (_showEmojis && !_session.peerLeft && !_recording)
-                EmojiPanel(onSelected: _insertEmoji),
+              // Fixed above the input: the peer's typing never moves the
+              // list, which can be scrolled meanwhile.
+              _liveDraft(context),
+              // Taps here keep the input focused (no "tap outside").
+              TextFieldTapRegion(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    if (_replyTo != null && !_session.peerLeft)
+                      _replyBar(context),
+                    _composer(context),
+                    if (_showEmojis && !_session.peerLeft && !_recording)
+                      ExcludeFocus(child: EmojiPanel(onSelected: _insertEmoji)),
+                  ],
+                ),
+              ),
             ],
           );
         },
+      ),
+    );
+  }
+
+  void _jumpToBottom() {
+    _scroll.animateTo(
+      _scroll.position.maxScrollExtent,
+      duration: const Duration(milliseconds: 250),
+      curve: Curves.easeOut,
+    );
+    _refocus();
+  }
+
+  /// What the peer is typing, at most a third of the screen high; a long
+  /// draft shows its end.
+  Widget _liveDraft(BuildContext context) {
+    final draft = _session.remoteDraft;
+    return ConstrainedBox(
+      key: const Key('live-draft-zone'),
+      constraints: BoxConstraints(
+        maxHeight: MediaQuery.sizeOf(context).height * 0.35,
+      ),
+      child: SingleChildScrollView(
+        reverse: true,
+        padding: EdgeInsets.symmetric(
+          horizontal: 16,
+          vertical: draft.isEmpty ? 0 : 2,
+        ),
+        child: LiveDraftBubble(text: draft),
       ),
     );
   }
@@ -598,7 +724,10 @@ class _ChatScreenState extends State<ChatScreen> {
             key: const Key('reply-cancel'),
             tooltip: 'Annuler la réponse',
             icon: const Icon(Icons.close_rounded),
-            onPressed: () => setState(() => _replyTo = null),
+            onPressed: () {
+              setState(() => _replyTo = null);
+              _refocus();
+            },
           ),
         ],
       ),
@@ -615,7 +744,7 @@ class _ChatScreenState extends State<ChatScreen> {
       child: Padding(
         padding: const EdgeInsets.fromLTRB(12, 6, 12, 12),
         child: Row(
-          crossAxisAlignment: CrossAxisAlignment.end,
+          crossAxisAlignment: CrossAxisAlignment.center,
           children: [
             Expanded(
               child: Container(
@@ -656,7 +785,7 @@ class _ChatScreenState extends State<ChatScreen> {
 
   Widget _inputRow(bool enabled) {
     return Row(
-      crossAxisAlignment: CrossAxisAlignment.end,
+      crossAxisAlignment: CrossAxisAlignment.center,
       children: [
         IconButton(
           key: const Key('emoji-toggle'),
@@ -666,26 +795,28 @@ class _ChatScreenState extends State<ChatScreen> {
                 ? Icons.keyboard_alt_outlined
                 : Icons.emoji_emotions_outlined,
           ),
-          onPressed: enabled
-              ? () => setState(() => _showEmojis = !_showEmojis)
-              : null,
+          onPressed: enabled ? _toggleEmojis : null,
         ),
         Expanded(
           child: TextField(
             key: const Key('chat-input'),
             controller: _input,
             focusNode: _focus,
-            autofocus: true,
+            autofocus: widget.active,
             enabled: enabled,
             maxLength: kMaxTextLength,
             minLines: 1,
             maxLines: 6,
-            keyboardType: TextInputType.multiline,
+            // Emoji panel open: keep the cursor, without the virtual
+            // keyboard over the panel.
+            keyboardType: _showEmojis
+                ? TextInputType.none
+                : TextInputType.multiline,
             textInputAction: TextInputAction.newline,
             textCapitalization: TextCapitalization.sentences,
             onChanged: _session.updateDraft,
             decoration: const InputDecoration(
-              hintText: 'Écrivez… on vous voit en direct',
+              hintText: 'Écrivez…',
               filled: false,
               border: InputBorder.none,
               enabledBorder: InputBorder.none,
@@ -752,6 +883,47 @@ class _ChatScreenState extends State<ChatScreen> {
           ),
         ),
       ],
+    );
+  }
+}
+
+/// Round button back to the latest bubble, with a dot when new ones
+/// arrived below.
+class _JumpToBottom extends StatelessWidget {
+  const _JumpToBottom({
+    required this.visible,
+    required this.fresh,
+    required this.onPressed,
+  });
+
+  final ValueListenable<bool> visible;
+  final ValueListenable<bool> fresh;
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return ListenableBuilder(
+      listenable: Listenable.merge([visible, fresh]),
+      builder: (context, _) => AnimatedScale(
+        scale: visible.value ? 1 : 0,
+        duration: const Duration(milliseconds: 150),
+        child: Badge(
+          isLabelVisible: fresh.value,
+          smallSize: 10,
+          child: ExcludeFocus(
+            child: FloatingActionButton.small(
+              key: const Key('jump-to-bottom'),
+              heroTag: null,
+              tooltip: 'Derniers messages',
+              backgroundColor: scheme.surfaceContainerHighest,
+              foregroundColor: scheme.onSurface,
+              onPressed: visible.value ? onPressed : null,
+              child: const Icon(Icons.keyboard_arrow_down_rounded),
+            ),
+          ),
+        ),
+      ),
     );
   }
 }

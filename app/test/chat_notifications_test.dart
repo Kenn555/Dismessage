@@ -75,7 +75,7 @@ void main() {
     channel.receive(const RegisteredFrame(id: me));
     channel.receive(const SessionStartedFrame(sid: 's1', peer: peer));
     await pumpEventQueue();
-    session = connection.session!;
+    session = connection.sessions.single;
   });
 
   tearDown(() {
@@ -308,6 +308,57 @@ void main() {
       await request(stranger);
       notifications.appVisible = true;
       expect(notifier.cancelled, contains('request-$stranger'));
+    });
+  });
+
+  group('several conversations', () {
+    const bob = '555666777';
+
+    setUp(() async {
+      channel.receive(const SessionStartedFrame(sid: 's2', peer: bob));
+      await pumpEventQueue();
+    });
+
+    test('one notification per conversation', () async {
+      notifications.appVisible = false;
+      await message('Coucou');
+      await receive(
+        const MessageCommitFrame(
+          sid: 's2',
+          seq: 1,
+          text: 'Salut',
+          mid: '1111222233334444',
+        ),
+      );
+      expect(notifier.shown.map((n) => n.tag), ['s1', 's2']);
+      expect(notifier.shown.last.title, '555 666 777');
+      expect(notifier.shown.last.lines, ['Salut']);
+    });
+
+    test('a reply goes to its own conversation', () async {
+      notifications.appVisible = false;
+      await message('Coucou');
+      notifier.callbacks!.onReply('s1', 'Oui');
+      final commit = channel.sink.sent.whereType<MessageCommitFrame>().single;
+      expect(commit.sid, 's1');
+      expect(commit.text, 'Oui');
+      expect(connection.sessions.last.messages, isEmpty);
+    });
+
+    test('tapping a notification shows its conversation', () async {
+      notifications.appVisible = false;
+      expect(connection.active?.sid, 's2');
+      await message('Coucou');
+      notifier.callbacks!.onOpen('s1');
+      expect(connection.active, session);
+      expect(session.unread, 0);
+    });
+
+    test('closing a conversation removes its notification', () async {
+      notifications.appVisible = false;
+      await message('Coucou');
+      connection.closeSession(session);
+      expect(notifier.cancelled, contains('s1'));
     });
   });
 }

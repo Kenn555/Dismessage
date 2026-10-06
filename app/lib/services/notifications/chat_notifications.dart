@@ -43,35 +43,24 @@ class ChatNotifications implements NotifierCallbacks {
   final Duration _typingDelay;
 
   late final StreamSubscription<ConnectionEvent> _events;
-  ChatSession? _session;
   bool _visible = true;
 
   /// Requesters whose request is notified.
   final Set<String> _requests = {};
 
-  /// Bubbles of the session already accounted for.
-  int _seen = 0;
-
-  /// Unread messages, oldest first (at most [kNotificationMaxLines]).
-  final List<String> _unread = [];
-
-  /// Typing already announced with a sound for the current burst.
-  bool _typingAnnounced = false;
-  String _shownDraft = '';
-  DateTime? _lastTypingUpdate;
-  Timer? _typingTimer;
-  bool _shown = false;
+  /// One notification per open conversation, by session ID.
+  final Map<String, _SessionNotice> _notices = {};
 
   /// Whether the user currently sees the app (foreground, focused).
   bool get appVisible => _visible;
   set appVisible(bool visible) {
     if (_visible == visible) return;
     _visible = visible;
-    final session = _session;
     if (visible) {
       if (!_granted) _askPermission();
-      _clear();
-      if (session != null) _seen = session.messages.length;
+      for (final notice in _notices.values) {
+        notice.markRead();
+      }
       // The request dialogs are on screen now.
       for (final from in _requests.toList()) {
         _cancelRequest(from);
@@ -114,27 +103,110 @@ class ChatNotifications implements NotifierCallbacks {
   }
 
   void _onConnection() {
-    final session = _connection.session;
-    if (session == _session) return;
-    _clear();
-    _session?.removeListener(_onSession);
-    _session = session;
-    if (session == null) return;
-    _seen = session.messages.length;
+    final open = {for (final s in _connection.sessions) s.sid: s};
+    for (final sid in _notices.keys.toList()) {
+      if (open[sid] != _notices[sid]!.session) _notices.remove(sid)!.dispose();
+    }
+    for (final MapEntry(key: sid, value: session) in open.entries) {
+      _notices[sid] ??= _SessionNotice(this, session);
+    }
+  }
+
+  static String _snippet(ChatEntry entry) => _shorten(switch (entry) {
+    ChatMessage(:final text) => text.replaceAll(RegExp(r'\s+'), ' ').trim(),
+    ChatImage() => '📷 Photo',
+    ChatVoice() => '🎤 Message vocal',
+  });
+
+  static String _shorten(String text) => text.length <= kNotificationLineLength
+      ? text
+      : '${text.substring(0, kNotificationLineLength)}…';
+
+  @override
+  void onReply(String tag, String text) {
+    final notice = _notices[tag];
+    if (notice == null) {
+      _notifier.cancel(tag);
+      return;
+    }
+    notice.session.sendQuickReply(text);
+    // Answered: the unread messages are read.
+    notice.markRead();
+  }
+
+  @override
+  void onOpen(String tag) {
+    if (tag.startsWith(_requestPrefix)) return;
+    final notice = _notices[tag];
+    if (notice == null) return;
+    notice.markRead();
+    // Bring this conversation on screen.
+    _connection.activate(notice.session);
+  }
+
+  @override
+  void onAction(String tag, String action) {
+    if (!tag.startsWith(_requestPrefix)) return;
+    final from = tag.substring(_requestPrefix.length);
+    switch (action) {
+      case 'accept':
+        _connection.accept(from);
+      case 'reject':
+        _connection.reject(from);
+    }
+    // The answered event removes the notification.
+  }
+
+  void dispose() {
+    _events.cancel();
+    for (final notice in _notices.values) {
+      notice.dispose();
+    }
+    _notices.clear();
+    _connection.removeListener(_onConnection);
+  }
+}
+
+/// The notification of one conversation: unread messages, then the typing.
+class _SessionNotice {
+  _SessionNotice(this._owner, this.session) : _seen = session.messages.length {
     session.addListener(_onSession);
   }
 
+  final ChatNotifications _owner;
+  final ChatSession session;
+
+  /// Bubbles of the session already accounted for.
+  int _seen;
+
+  /// Unread messages, oldest first (at most [kNotificationMaxLines]).
+  final List<String> _unread = [];
+
+  /// Typing already announced with a sound for the current burst.
+  bool _typingAnnounced = false;
+  String _shownDraft = '';
+  DateTime? _lastTypingUpdate;
+  Timer? _typingTimer;
+  bool _shown = false;
+  bool _disposed = false;
+
+  SystemNotifier get _notifier => _owner._notifier;
+
+  /// Everything shown so far is read: clear the notification.
+  void markRead() {
+    _seen = session.messages.length;
+    _clear();
+  }
+
   void _onSession() {
-    final session = _session;
-    if (session == null) return;
     final entries = session.messages;
     final fresh = entries.skip(_seen).where((e) => !e.fromMe).toList();
     _seen = entries.length;
-    if (_visible) return;
+    if (_owner._visible) return;
 
     if (fresh.isNotEmpty) {
       for (final entry in fresh) {
-        _unread.add(_snippet(entry));
+        _unread.add(ChatNotifications._snippet(entry));
       }
       while (_unread.length > kNotificationMaxLines) {
         _unread.removeAt(0);
@@ -170,15 +242,18 @@ class ChatNotifications implements NotifierCallbacks {
     final last = _lastTypingUpdate;
     final wait = last == null
         ? Duration.zero
-        : _typingDelay - DateTime.now().difference(last);
+        : _owner._typingDelay - DateTime.now().difference(last);
     if (wait <= Duration.zero) {
       _shownDraft = draft;
       _show(alert: false);
     } else {
       _typingTimer ??= Timer(wait, () {
         _typingTimer = null;
-        final current = _session?.remoteDraft ?? '';
-        if (!_visible && current.isNotEmpty && current != _shownDraft) {
+        if (_disposed) return;
+        final current = session.remoteDraft;
+        if (!_owner._visible &&
+            current.isNotEmpty &&
+            current != _shownDraft) {
           _shownDraft = current;
           _show(alert: false);
         }
@@ -187,17 +262,16 @@ class ChatNotifications implements NotifierCallbacks {
   }
 
   void _show({required bool alert}) {
-    final session = _session;
-    if (session == null) return;
     final draft = session.remoteDraft;
     final lines = [
       ..._unread,
-      if (draft.isNotEmpty) '✍️ ${_shorten(draft.replaceAll('\n', ' '))}',
+      if (draft.isNotEmpty)
+        '✍️ ${ChatNotifications._shorten(draft.replaceAll('\n', ' '))}',
     ];
     if (lines.isEmpty) return;
     if (draft.isNotEmpty) _lastTypingUpdate = DateTime.now();
     _shown = true;
-    final name = _contacts.byId(session.peer)?.name;
+    final name = _owner._contacts.byId(session.peer)?.name;
     final who = name ?? DismessageId.format(session.peer);
     _notifier.show(
       ChatNotice(
@@ -213,53 +287,10 @@ class ChatNotifications implements NotifierCallbacks {
     );
   }
 
-  static String _snippet(ChatEntry entry) => _shorten(switch (entry) {
-    ChatMessage(:final text) => text.replaceAll(RegExp(r'\s+'), ' ').trim(),
-    ChatImage() => '📷 Photo',
-    ChatVoice() => '🎤 Message vocal',
-  });
-
-  static String _shorten(String text) => text.length <= kNotificationLineLength
-      ? text
-      : '${text.substring(0, kNotificationLineLength)}…';
-
-  @override
-  void onReply(String tag, String text) {
-    final session = _session;
-    if (session == null || session.sid != tag) {
-      _notifier.cancel(tag);
-      return;
-    }
-    session.sendQuickReply(text);
-    // Answered: the unread messages are read.
-    _seen = session.messages.length;
-    _clear();
-  }
-
-  @override
-  void onOpen(String tag) {
-    if (tag.startsWith(_requestPrefix)) return;
-    _clear();
-  }
-
-  @override
-  void onAction(String tag, String action) {
-    if (!tag.startsWith(_requestPrefix)) return;
-    final from = tag.substring(_requestPrefix.length);
-    switch (action) {
-      case 'accept':
-        _connection.accept(from);
-      case 'reject':
-        _connection.reject(from);
-    }
-    // The answered event removes the notification.
-  }
-
   void _cancel() {
-    final session = _session;
     _typingTimer?.cancel();
     _typingTimer = null;
-    if (_shown && session != null) _notifier.cancel(session.sid);
+    if (_shown) _notifier.cancel(session.sid);
     _shown = false;
   }
 
@@ -271,10 +302,10 @@ class ChatNotifications implements NotifierCallbacks {
     _cancel();
   }
 
+  /// The conversation is closed: its notification goes too.
   void dispose() {
-    _events.cancel();
+    _disposed = true;
     _clear();
-    _session?.removeListener(_onSession);
-    _connection.removeListener(_onConnection);
+    session.removeListener(_onSession);
   }
 }

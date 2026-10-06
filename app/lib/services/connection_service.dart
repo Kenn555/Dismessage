@@ -91,7 +91,8 @@ class ConnectionService extends ChangeNotifier {
   String? _pendingRequest;
   Identity? _me;
   Identity? _pendingRelease;
-  ChatSession? _session;
+  final Map<String, ChatSession> _sessions = {};
+  ChatSession? _active;
   ServerStatus _status = ServerStatus.offline;
   bool _disposed = false;
   bool _suspended = false;
@@ -105,7 +106,31 @@ class ConnectionService extends ChangeNotifier {
   Stream<ConnectionEvent> get events => _events.stream;
   ServerStatus get status => _status;
   String? get myId => _me?.id;
-  ChatSession? get session => _session;
+
+  /// Open conversations, oldest first (ended ones stay until closed).
+  List<ChatSession> get sessions => List.unmodifiable(_sessions.values);
+
+  /// The conversation on screen, if any.
+  ChatSession? get active => _active;
+
+  /// The live conversation with [peer], if any.
+  ChatSession? liveSessionWith(String peer) {
+    for (final session in _sessions.values) {
+      if (session.peer == peer && !session.peerLeft) return session;
+    }
+    return null;
+  }
+
+  /// Shows [session] (null: none, back to the home screen). Its unread
+  /// bubbles are then read.
+  void activate(ChatSession? session) {
+    if (session != null && _sessions[session.sid] != session) return;
+    if (session == _active) return;
+    _active?.viewing = false;
+    _active = session;
+    session?.viewing = true;
+    notifyListeners();
+  }
   Uri get serverUri => _serverUri;
 
   /// Consecutive failed connection attempts (0 once online).
@@ -192,19 +217,45 @@ class ConnectionService extends ChangeNotifier {
     _events.add(IncomingRequestAnsweredEvent(from));
   }
 
-  /// Leaves the current conversation (the peer is notified).
-  void leaveSession() {
-    final session = _session;
-    if (session == null) return;
-    _session = null;
+  /// Closes [session] (the peer is notified if still there). The most
+  /// recent remaining conversation is shown if it was on screen.
+  void closeSession(ChatSession session) {
+    if (_sessions[session.sid] != session) return;
+    _remove(session);
+    if (_active == session) {
+      _active = null;
+      if (_sessions.isNotEmpty) {
+        _active = _sessions.values.last..viewing = true;
+      }
+    }
+    notifyListeners();
+  }
+
+  /// Closes every conversation.
+  void closeAll() {
+    if (_sessions.isEmpty) return;
+    for (final session in _sessions.values.toList()) {
+      _remove(session);
+    }
+    _active = null;
+    notifyListeners();
+  }
+
+  void _remove(ChatSession session) {
+    _sessions.remove(session.sid);
     if (!session.peerLeft) _send(SessionLeaveFrame(sid: session.sid));
     session.dispose();
-    notifyListeners();
+  }
+
+  void _markAllPeerLeft() {
+    for (final session in _sessions.values) {
+      session.markPeerLeft();
+    }
   }
 
   /// Switches to a brand new ID; the old one is released on the server.
   Future<void> regenerateId() async {
-    leaveSession();
+    closeAll();
     _pendingRelease ??= _me;
     _me = await _identity.regenerate();
     if (_status != ServerStatus.offline) {
@@ -226,7 +277,7 @@ class ConnectionService extends ChangeNotifier {
     final channel = _channel;
     _closeChannel();
     channel?.sink.close();
-    _session?.markPeerLeft();
+    _markAllPeerLeft();
     _setStatus(ServerStatus.offline);
   }
 
@@ -246,7 +297,7 @@ class ConnectionService extends ChangeNotifier {
     _clearRequest();
     final channel = _channel;
     _closeChannel();
-    _session?.markPeerLeft();
+    _markAllPeerLeft();
     await channel?.sink.close();
     notifyListeners();
     await _open();
@@ -338,11 +389,7 @@ class ConnectionService extends ChangeNotifier {
         _events.add(IncomingRequestEvent(from));
       case SessionStartedFrame(:final sid, :final peer):
         _clearRequest();
-        leaveSession();
-        final session = ChatSession(sid: sid, peer: peer, send: _send);
-        _session = session;
-        notifyListeners();
-        _events.add(SessionStartedEvent(session));
+        _startSession(sid, peer);
       case PeerOfflineFrame(:final peer):
         _clearRequest(peer);
         _events.add(PeerOfflineEvent(peer));
@@ -352,9 +399,9 @@ class ConnectionService extends ChangeNotifier {
       case ConnectCancelFrame(:final peer):
         _events.add(RequestCancelledEvent(peer));
       case PeerLeftFrame(:final sid):
-        if (_session?.sid == sid) _session!.markPeerLeft();
+        _sessions[sid]?.markPeerLeft();
       case RelayedFrame():
-        if (_session?.sid == frame.sid) _session!.receive(frame);
+        _sessions[frame.sid]?.receive(frame);
       case ErrorFrame(:final code, :final message):
         _events.add(ServerErrorEvent(code, message));
       default:
@@ -362,10 +409,40 @@ class ConnectionService extends ChangeNotifier {
     }
   }
 
+  /// Opens a conversation and shows it. An older one with the same peer
+  /// (ended, or crossed requests) is replaced in place.
+  void _startSession(String sid, String peer) {
+    final session = ChatSession(sid: sid, peer: peer, send: _send);
+    final previous = _sessions.values.where((s) => s.peer == peer).toList();
+    if (previous.isEmpty) {
+      _sessions[sid] = session;
+    } else {
+      final old = previous.first;
+      final entries = _sessions.entries.toList();
+      _sessions.clear();
+      for (final MapEntry(:key, :value) in entries) {
+        if (value == old) {
+          _sessions[sid] = session;
+        } else if (!previous.contains(value)) {
+          _sessions[key] = value;
+        }
+      }
+      for (final stale in previous) {
+        if (!stale.peerLeft) _send(SessionLeaveFrame(sid: stale.sid));
+        if (_active == stale) _active = null;
+        stale.dispose();
+      }
+    }
+    _active?.viewing = false;
+    _active = session..viewing = true;
+    notifyListeners();
+    _events.add(SessionStartedEvent(session));
+  }
+
   void _onClosed() {
     _closeChannel();
     _clearRequest();
-    _session?.markPeerLeft();
+    _markAllPeerLeft();
     _fail('Connexion au serveur perdue.');
   }
 
@@ -418,7 +495,10 @@ class ConnectionService extends ChangeNotifier {
     final channel = _channel;
     _closeChannel();
     channel?.sink.close();
-    _session?.dispose();
+    for (final session in _sessions.values) {
+      session.dispose();
+    }
+    _sessions.clear();
     _events.close();
     super.dispose();
   }

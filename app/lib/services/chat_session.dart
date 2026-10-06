@@ -119,8 +119,22 @@ class ChatSession extends ChangeNotifier {
   final Map<String, ChatEntry> _byId = {};
   Timer? _flushTimer;
   bool _peerLeft = false;
+  bool _viewing = false;
+  int _unread = 0;
 
   List<ChatEntry> get messages => List.unmodifiable(_entries);
+
+  /// Whether this conversation is the one on screen.
+  bool get viewing => _viewing;
+  set viewing(bool value) {
+    if (_viewing == value) return;
+    _viewing = value;
+    if (value) _unread = 0;
+    notifyListeners();
+  }
+
+  /// Peer bubbles received while this conversation was not on screen.
+  int get unread => _unread;
 
   /// The bubble with this ID, if any.
   ChatEntry? byId(String id) => _byId[id];
@@ -352,6 +366,7 @@ class ChatSession extends ChangeNotifier {
   void _add(ChatEntry entry) {
     _byId[entry.id] = entry;
     _entries.add(entry);
+    if (!entry.fromMe && !_viewing) _unread++;
   }
 
   /// Keeps a reply reference only if it points to an existing bubble.

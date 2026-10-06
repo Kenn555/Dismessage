@@ -468,4 +468,185 @@ void main() {
       expect(find.byTooltip('Écouter'), findsOneWidget);
     });
   });
+
+  group('scrolling', () {
+    ScrollPosition position(WidgetTester tester) => tester
+        .state<ScrollableState>(
+          find.descendant(
+            of: find.byKey(const Key('chat-list')),
+            matching: find.byType(Scrollable),
+          ),
+        )
+        .position;
+
+    FloatingActionButton jumpButton(WidgetTester tester) =>
+        tester.widget(find.byKey(const Key('jump-to-bottom')));
+
+    /// 40 received bubbles (seq 1 to 40), then at the bottom.
+    Future<void> fill(WidgetTester tester) async {
+      for (var i = 1; i <= 40; i++) {
+        session.receive(
+          MessageCommitFrame(
+            sid: 's1',
+            seq: i,
+            text: 'Message $i',
+            mid: i.toRadixString(16).padLeft(16, '0'),
+          ),
+        );
+        await tester.pump();
+      }
+      final p = position(tester);
+      expect(p.pixels, p.maxScrollExtent);
+    }
+
+    Future<void> scrollUp(WidgetTester tester) async {
+      await tester.drag(find.byKey(const Key('chat-list')), const Offset(0, 600));
+      await tester.pump();
+      final p = position(tester);
+      expect(p.pixels, lessThan(p.maxScrollExtent - 400));
+    }
+
+    testWidgets('the peer typing never moves the list', (tester) async {
+      await pumpChat(tester);
+      await fill(tester);
+      await scrollUp(tester);
+      final before = position(tester).pixels;
+
+      for (var i = 1; i <= 5; i++) {
+        session.receive(
+          DraftSnapshotFrame(sid: 's1', seq: 40 + i, text: 'Je tape ' * i),
+        );
+        await tester.pump(const Duration(milliseconds: 50));
+      }
+      expect(position(tester).pixels, before);
+      // The typing is shown in its fixed zone, outside the list.
+      expect(
+        find.descendant(
+          of: find.byKey(const Key('live-draft-zone')),
+          matching: find.byKey(const Key('live-draft-text')),
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.descendant(
+          of: find.byKey(const Key('chat-list')),
+          matching: find.byKey(const Key('live-draft-text')),
+        ),
+        findsNothing,
+      );
+    });
+
+    testWidgets('scrolled up, a received bubble shows the button', (
+      tester,
+    ) async {
+      await pumpChat(tester);
+      await fill(tester);
+      expect(jumpButton(tester).onPressed, isNull, reason: 'at the bottom');
+      await scrollUp(tester);
+      final before = position(tester).pixels;
+      session.receive(
+        const MessageCommitFrame(
+          sid: 's1',
+          seq: 41,
+          text: 'Nouveau',
+          mid: 'ffffffffffffffff',
+        ),
+      );
+      await tester.pump();
+      expect(position(tester).pixels, before);
+      expect(jumpButton(tester).onPressed, isNotNull);
+      expect(
+        tester
+            .widget<Badge>(
+              find.ancestor(
+                of: find.byKey(const Key('jump-to-bottom')),
+                matching: find.byType(Badge),
+              ),
+            )
+            .isLabelVisible,
+        isTrue,
+      );
+
+      await tester.pump(const Duration(milliseconds: 200)); // scale-in
+      await tester.tap(find.byKey(const Key('jump-to-bottom')));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
+      final p = position(tester);
+      expect(p.pixels, p.maxScrollExtent);
+    });
+
+    testWidgets('at the bottom, a received bubble is followed', (
+      tester,
+    ) async {
+      await pumpChat(tester);
+      await fill(tester);
+      receiveText('Encore', mid: 'eeeeeeeeeeeeeeee');
+      await tester.pump();
+      await tester.pump();
+      final p = position(tester);
+      expect(p.pixels, p.maxScrollExtent);
+    });
+
+    testWidgets('my own message always goes to the bottom', (tester) async {
+      await pumpChat(tester);
+      await fill(tester);
+      await scrollUp(tester);
+      await type(tester, 'Me voilà');
+      await tester.tap(find.byKey(const Key('send')));
+      await tester.pump();
+      await tester.pump();
+      final p = position(tester);
+      expect(p.pixels, p.maxScrollExtent);
+    });
+  });
+
+  group('focus', () {
+    bool inputFocused(WidgetTester tester) => tester
+        .widget<TextField>(find.byKey(const Key('chat-input')))
+        .focusNode!
+        .hasFocus;
+
+    testWidgets('the cursor comes back after an emoji', (tester) async {
+      await pumpChat(tester);
+      await tester.tap(find.byKey(const Key('emoji-toggle')));
+      await tester.pump();
+      expect(inputFocused(tester), isTrue);
+      // The panel replaces the virtual keyboard.
+      expect(
+        tester
+            .widget<TextField>(find.byKey(const Key('chat-input')))
+            .keyboardType,
+        TextInputType.none,
+      );
+      FocusManager.instance.primaryFocus?.unfocus();
+      await tester.pump();
+      await tester.tap(find.byKey(const ValueKey('emoji-😀')));
+      await tester.pump();
+      expect(inputFocused(tester), isTrue);
+      await tester.pump(const Duration(milliseconds: kDraftBatchMs * 2));
+    });
+
+    testWidgets('the cursor comes back after a photo', (tester) async {
+      await pumpChat(tester);
+      FocusManager.instance.primaryFocus?.unfocus();
+      await tester.pump();
+      await tester.tap(find.byKey(const Key('send-image')));
+      await tester.pump();
+      await tester.pump();
+      expect(session.messages.single, isA<ChatImage>());
+      expect(inputFocused(tester), isTrue);
+    });
+
+    testWidgets('the cursor comes back after a cancelled photo choice', (
+      tester,
+    ) async {
+      await pumpChat(tester, camera: true);
+      await tester.tap(find.byKey(const Key('send-image')));
+      await tester.pumpAndSettle();
+      await tester.tapAt(const Offset(10, 10));
+      await tester.pumpAndSettle();
+      expect(session.messages, isEmpty);
+      expect(inputFocused(tester), isTrue);
+    });
+  });
 }
