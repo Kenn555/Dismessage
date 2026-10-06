@@ -27,6 +27,8 @@ object EngineHolder {
         private set
     var notifications: NotificationHandler? = null
         private set
+    var files: FileHandler? = null
+        private set
 
     fun get(context: Context): FlutterEngine {
         engine?.let { return it }
@@ -39,6 +41,8 @@ object EngineHolder {
         val notifyChannel = MethodChannel(messenger, "dismessage/notify")
         notifications = NotificationHandler(app, notifyChannel)
             .also { notifyChannel.setMethodCallHandler(it) }
+        val filesChannel = MethodChannel(messenger, "dismessage/files")
+        files = FileHandler(app).also { filesChannel.setMethodCallHandler(it) }
         val backgroundChannel = MethodChannel(messenger, "dismessage/background")
         backgroundChannel.setMethodCallHandler { call, result ->
             when (call.method) {

@@ -2,14 +2,20 @@
 // Plain `test` (no widget binding) so that real sockets and timers are used.
 import 'dart:async';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:dismessage/services/chat_session.dart';
 import 'package:dismessage/services/connection_service.dart';
+import 'package:dismessage/services/file_storage.dart';
+import 'package:dismessage/services/file_storage_io.dart';
 import 'package:dismessage/services/identity_service.dart';
 import 'package:dismessage/services/image_codec.dart';
+import 'package:dismessage_protocol/dismessage_protocol.dart';
 import 'package:dismessage_server/dismessage_server.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:image/image.dart' as img;
+
+import 'fakes.dart';
 
 Future<void> waitFor(bool Function() condition, {String? reason}) async {
   final deadline = DateTime.now().add(const Duration(seconds: 5));
@@ -25,11 +31,15 @@ void main() {
   late HttpServer server;
   final services = <ConnectionService>[];
 
-  Future<ConnectionService> startClient([MemoryStore? store]) async {
+  Future<ConnectionService> startClient([
+    MemoryStore? store,
+    FileStorage? files,
+  ]) async {
     final service = ConnectionService(
       identity: IdentityService(store ?? MemoryStore()),
       serverUri: Uri.parse('ws://localhost:${server.port}/ws'),
       reconnectDelay: const Duration(milliseconds: 100),
+      fileStorage: files,
     );
     services.add(service);
     await service.start();
@@ -123,7 +133,10 @@ void main() {
       a.sessions.single.updateDraft(chars.take(i).join());
       await Future<void>.delayed(const Duration(milliseconds: 40));
     }
-    await waitFor(() => b.sessions.single.remoteDraft == typed, reason: 'live draft');
+    await waitFor(
+      () => b.sessions.single.remoteDraft == typed,
+      reason: 'live draft',
+    );
 
     // B saw the text grow progressively, never something else.
     expect(seenByB.length, greaterThan(3));
@@ -132,7 +145,10 @@ void main() {
     }
 
     expect(a.sessions.single.sendMessage(), isTrue);
-    await waitFor(() => b.sessions.single.messages.isNotEmpty, reason: 'message');
+    await waitFor(
+      () => b.sessions.single.messages.isNotEmpty,
+      reason: 'message',
+    );
     expect((b.sessions.single.messages.single as ChatMessage).text, typed);
     expect(b.sessions.single.messages.single.fromMe, isFalse);
     expect(b.sessions.single.remoteDraft, '');
@@ -266,4 +282,50 @@ void main() {
     expect(received.bytes, encoded.bytes);
     await waitFor(() => sent.status == ImageStatus.opened, reason: 'receipt');
   });
+
+  test(
+    'a file goes to the receiver disk once accepted, typing still live',
+    () async {
+      final downloads = Directory.systemTemp.createTempSync('dismessage_e2e_');
+      addTearDown(() => downloads.deleteSync(recursive: true));
+      final a = await startClient();
+      final b = await startClient(
+        null,
+        DesktopFileStorage(directory: () async => downloads),
+      );
+      await pair(a, b);
+
+      final bytes = Uint8List.fromList(
+        List.generate(kFileChunkBytes * 12 + 4321, (i) => (i * 31 + 7) % 256),
+      );
+      final sent = a.sessions.single.sendFile(
+        FakeChosenFile('Présentation finale.pptx', bytes),
+      )!;
+      await waitFor(
+        () => b.sessions.single.messages.isNotEmpty,
+        reason: 'offer',
+      );
+      final received = b.sessions.single.messages.single as ChatFile;
+      expect(received.status, FileStatus.awaiting);
+      expect(downloads.listSync(), isEmpty);
+
+      await b.sessions.single.acceptFile(received);
+      // Typing keeps flowing during the transfer.
+      a.sessions.single.updateDraft('ça arrive');
+      await waitFor(
+        () => b.sessions.single.remoteDraft == 'ça arrive',
+        reason: 'live typing during the transfer',
+      );
+      await waitFor(
+        () => sent.status == FileStatus.done,
+        reason: 'sender told the file is saved',
+      );
+      expect(received.status, FileStatus.done);
+      final saved = File(
+        '${downloads.path}${Platform.pathSeparator}Présentation finale.pptx',
+      );
+      expect(saved.readAsBytesSync(), bytes);
+      expect(downloads.listSync(), hasLength(1), reason: 'no .part left');
+    },
+  );
 }

@@ -14,9 +14,13 @@ Chaque installation a un **ID à 9 chiffres** (style AnyDesk, ex. `482 913 075`)
 
 **Règle d'or : toute logique qui n'est pas de l'affichage va dans `packages/protocol`**, où elle est testable sans Flutter.
 
-- Les messages sont **éphémères** : rien n'est stocké, ni côté serveur ni côté client.
+- Les messages sont **éphémères** : rien n'est stocké, ni côté serveur ni côté client. Seule exception voulue : un **fichier** que le destinataire accepte est enregistré dans ses téléchargements.
 - Les **contacts** (`ContactsService`) sont stockés **uniquement sur l'appareil** (clé `dismessage.contacts`). Ils ne contiennent qu'un ID et un nom, jamais de message.
 - **Images :** seule une miniature déjà floutée part à l'envoi (`image_offer`). L'image nette n'est transférée (`image_data`) que quand le destinataire appuie pour l'ouvrir (`image_request`), et l'expéditeur voit alors « Ouverte ». `ImageCodec` réduit l'image à `kMaxImageSide`, la recompresse sous `kMaxImageBytes` et **supprime l'EXIF** (dont la position GPS). Les images ne vivent qu'en mémoire, comme les messages. Un client n'accepte un `image_data` que pour une image qu'il a demandée.
+- **Fichiers :** bouton trombone (`ChatScreen._chooseFile`). Seule l'offre part (`file_offer` : nom, taille) ; le destinataire voit « Accepter » / « Refuser » dans la bulle (`FileBubble`). Une fois accepté, le fichier passe par morceaux de `kFileChunkBytes` (`file_chunk`), au plus `kFileWindowChunks` d'avance sur les accusés (`file_ack`, envoyés après écriture sur disque) : le relais ne stocke rien et la frappe en direct reste fluide pendant le transfert. Le dernier accusé signifie « enregistré » (« Reçu » chez l'expéditeur). `file_cancel` sert au refus comme à l'annulation par l'un ou l'autre ; une erreur de lecture ou d'écriture, un départ ou la fermeture de la conversation arrêtent le transfert et **suppriment le fichier partiel**. Plafond `kMaxFileBytes` (512 Mo). Le nom reçu est assaini (`FileNames.sanitize` : pas de chemin, de caractère interdit ni de nom réservé Windows) et jamais un fichier existant n'est écrasé (`nom (2).ext`). Logique pure : `OutgoingTransfer` / `IncomingTransfer` (`file_transfer.dart`) ; flux : `ChatSession.sendFile` / `acceptFile` / `cancelFile` ; E/S : `FileStorage` / `ChosenFile` (`file_storage*.dart`, injectés : `ConnectionService(fileStorage:)`, `ChatScreen(pickFile:)`).
+  - **Windows :** sélecteur `file_selector_windows` (via son interface, comme `record_windows`) ; écriture dans **Téléchargements** sous `nom.part`, renommé une fois complet ; « Ouvrir » et « Afficher dans le dossier » (`explorer.exe`).
+  - **Android :** canal maison `dismessage/files` (`FileHandler.kt`, sans dépendance Gradle) : sélecteur système (`ACTION_OPEN_DOCUMENT`, réponse via `MainActivity.onActivityResult`), lecture par morceaux, écriture MediaStore dans **Téléchargements/Dismessage** (masqué tant que `IS_PENDING`). Avant Android 10 : dossier Téléchargements propre à l'appli (pas de permission), sans « Ouvrir ».
+  - **Web :** `<input type=file>` lu par tranches (`Blob.slice`) ; une page ne peut pas écrire sur le disque, les morceaux restent en mémoire puis le navigateur télécharge le fichier comme d'habitude.
 - **Émojis :** panneau intégré (`EmojiPanel`), sans paquet externe. L'émoji est inséré au curseur puis diffusé en direct comme une frappe.
 - **Bulles :** chaque bulle (texte, image, vocal) porte un `EntryId` (16 hex aléatoires), commun aux deux pairs. Il sert aux **réponses** (champ `reply`, glisser la bulle vers la droite ou appui long → « Répondre ») et aux **réactions** (une seule par bulle, uniquement sur les bulles de l'interlocuteur ; renvoyer le même émoji la retire). Une référence vers une bulle inconnue est ignorée.
 - **IDs masqués :** mon ID et ceux des contacts enregistrés s'affichent `482 *** 075` (`DismessageId.mask`), avec un bouton œil pour les dévoiler (`IdPrivacy`, non mémorisé : masqué à chaque lancement). « Copier » copie l'ID complet. L'ID d'un inconnu reste complet, pour savoir qui c'est.
@@ -132,6 +136,11 @@ Enveloppe : `{"t": "<type>", ...champs}`. Les trames de session portent `sid`.
 | `image_request` | C→S→C | `sid`, `img` (le destinataire ouvre l'image ; sert aussi d'accusé « Ouverte ») |
 | `image_data` | C→S→C | `sid`, `img`, `data` (JPEG base64, ≤ `kMaxImageDataLength`) |
 | `voice` | C→S→C | `sid`, `mid`, `ms` (durée), `mime` (`audio/…`), `data` (base64, ≤ `kMaxVoiceDataLength`), `reply`? |
+| `file_offer` | C→S→C | `sid`, `fid` (EntryId), `name` (≤ `kMaxFileNameLength`, sans caractère de contrôle), `size` (0 à `kMaxFileBytes`), `reply`? |
+| `file_accept` | C→S→C | `sid`, `fid` (le destinataire accepte : les morceaux peuvent partir) |
+| `file_cancel` | C→S→C | `sid`, `fid` (refus, annulation ou erreur, dans les deux sens) |
+| `file_chunk` | C→S→C | `sid`, `fid`, `i` (index du morceau, dans l'ordre), `data` (base64, ≤ `kMaxFileChunkDataLength`) |
+| `file_ack` | C→S→C | `sid`, `fid`, `n` (morceaux écrits sur disque ; `n` = total : fichier enregistré) |
 | `reaction` | C→S→C | `sid`, `ref` (EntryId d'une bulle du destinataire), `emoji` (`""` = retirée, ≤ `kMaxReactionLength`) |
 | `presence_watch` | C→S | `ids` (≤ `kMaxPresenceWatch`, remplace la liste précédente ; enregistrement requis) |
 | `presence` | S→C | `id`, `online` (une par ID à la réception de `presence_watch`, puis à chaque changement) |
@@ -158,10 +167,10 @@ Enveloppe : `{"t": "<type>", ...champs}`. Les trames de session portent `sid`.
 | Fichier | Couvre |
 | --- | --- |
 | `packages/protocol/test/*` | IDs, diff (dont le test aléatoire de 1 000 paires), émetteur et récepteur de brouillon, trames JSON |
-| `server/test/relay_test.dart` | Vrai serveur sur port éphémère : enregistrement, vol d'ID, release, mise en relation, relais isolé par session (dont réponses, réactions, vocaux, un client dans deux sessions), présence, robustesse |
+| `server/test/relay_test.dart` | Vrai serveur sur port éphémère : enregistrement, vol d'ID, release, mise en relation, relais isolé par session (dont réponses, réactions, vocaux, fichiers, un client dans deux sessions), présence, robustesse |
 | `app/test/live_draft_bubble_test.dart` | Points absents pendant la frappe, présents après `kPauseDotsMs` et collés au texte, déroulé progressif, fondu, emoji |
 | `app/test/home_screen_test.dart` | Affichage de l'ID, validation de l'ID saisi, régénération avec confirmation |
-| `app/test/end_to_end_test.dart` | Deux `ConnectionService` réels + vrai relais : frappe en direct, envoi, départ, ID stable, régénération, annulation, A ↔ B et A ↔ C en même temps |
+| `app/test/end_to_end_test.dart` | Deux `ConnectionService` réels + vrai relais : frappe en direct, envoi, fichier écrit sur disque après acceptation (frappe toujours en direct), départ, ID stable, régénération, annulation, A ↔ B et A ↔ C en même temps |
 | `app/test/multi_session_test.dart` | Plusieurs sessions : routage par `sid`, non-lus, `peer_left` isolé, fermeture, remplacement du même pair, perte du relais, nouvel ID |
 | `app/test/chats_shell_test.dart` | Avatars flottants (dès 2), badge, bascule, fermeture par appui long, saisie conservée ; sidebar (noms, présence, non-lus, ✕) ; Retour garde les conversations (« Conversations en cours ») ; contact déjà en conversation rouvert |
 | `app/test/home_requests_test.dart` | Faux serveur scripté (`test/fakes.dart`) : attente, annulation, refus, expiration, boîte entrante, contacts |
@@ -170,6 +179,9 @@ Enveloppe : `{"t": "<type>", ...champs}`. Les trames de session portent `sid`.
 | `app/test/image_codec_test.dart` | Redimensionnement, plafond de taille, miniature, transparence, **suppression de l'EXIF**, fichier corrompu |
 | `app/test/chat_session_images_test.dart`, `chat_media_test.dart` | Flux miniature, ouverture, données et accusé ; données non sollicitées ignorées ; bulle floutée ; panneau d'émojis (insertion au curseur, diffusion en direct) |
 | `app/test/chat_session_features_test.dart` | IDs de bulles, réponses (référence inconnue ignorée), réactions (bascule, seulement sur les bulles d'autrui), vocaux (taille, doublons) |
+| `packages/protocol/test/file_transfer_test.dart` | Découpage en morceaux, fenêtre d'envoi, accusés impossibles, ordre et taille des morceaux reçus (test aléatoire émetteur / récepteur), assainissement et unicité des noms |
+| `app/test/chat_session_files_test.dart` | Offre seule avant acceptation, transfert complet octet pour octet, fenêtre, progression, refus, retrait, annulation et départ en cours (fichier partiel supprimé), erreurs de lecture / d'écriture / de dossier, fichier vide, plafond, nom dangereux, morceaux non sollicités ou désordonnés |
+| `app/test/chat_files_test.dart`, `file_storage_test.dart` | Bouton trombone, retrait, fichier trop gros, Accepter / Refuser, progression, Ouvrir / dossier, erreur affichée ; écriture `.part` puis renommage, pas d'écrasement, abandon ; tailles en français |
 | `app/test/chat_features_test.dart` | Multiligne et Entrée / Maj+Entrée, réponse par menu et par glissement, réactions, bouton photo (appareil / galerie, webcam PC : prise, fermeture, refus), enregistrement, annulation, durée max, refus du micro, lecture, défilement (frappe fixe, bouton « ↓ »), curseur rendu après émoji / photo |
 | `app/test/background_mode_test.dart` | Option arrière-plan : désactivée par défaut, enregistrée (lue au démarrage du téléphone), transmise au service ; absente hors Android |
 | `app/test/presence_test.dart` | Liste surveillée, point vert / gris, ajout de contact, présence oubliée à la déconnexion |

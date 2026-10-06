@@ -10,6 +10,7 @@ String entrySnippet(ChatEntry entry) => switch (entry) {
   ChatImage() => '📷 Photo',
   ChatVoice(:final duration) =>
     '🎤 Message vocal (${formatVoiceDuration(duration)})',
+  ChatFile(:final name) => '📎 $name',
 };
 
 /// Wraps a bubble with what every bubble shares: alignment, swipe right to

@@ -15,6 +15,11 @@ DraftUpdate deliver(DraftState state, RelayedFrame frame) => switch (frame) {
   ImageRequestFrame() ||
   ImageDataFrame() ||
   VoiceFrame() ||
+  FileOfferFrame() ||
+  FileAcceptFrame() ||
+  FileCancelFrame() ||
+  FileChunkFrame() ||
+  FileAckFrame() ||
   ReactionFrame() => DraftUpdate.ignored,
 };
 

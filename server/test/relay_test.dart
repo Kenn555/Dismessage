@@ -356,6 +356,39 @@ void main() {
       await c.expectSilence();
     });
 
+    test(
+      'files: offer, accept, chunks, acks and cancel reach the peer only',
+      () async {
+        final a = await (await client()).register(idA);
+        final b = await (await client()).register(idB);
+        final c = await (await client()).register(idC);
+        final sid = await pair(a, b);
+        const fid = '0011223344556677';
+
+        a.send(
+          FileOfferFrame(sid: sid, fid: fid, name: 'notes.pdf', size: 300000),
+        );
+        final offer = await b.expectNext<FileOfferFrame>();
+        expect((offer.name, offer.size), ('notes.pdf', 300000));
+
+        b.send(FileAcceptFrame(sid: sid, fid: fid));
+        await a.expectNext<FileAcceptFrame>();
+
+        // A full chunk goes through in one frame.
+        final data = 'A' * kMaxFileChunkDataLength;
+        a.send(FileChunkFrame(sid: sid, fid: fid, index: 0, data: data));
+        final chunk = await b.expectNext<FileChunkFrame>();
+        expect((chunk.index, chunk.data.length), (0, data.length));
+
+        b.send(FileAckFrame(sid: sid, fid: fid, count: 1));
+        expect((await a.expectNext<FileAckFrame>()).count, 1);
+
+        b.send(FileCancelFrame(sid: sid, fid: fid));
+        await a.expectNext<FileCancelFrame>();
+        await c.expectSilence();
+      },
+    );
+
     test('messages from an older client (no mid) still go through', () async {
       final a = await (await client()).register(idA);
       final b = await (await client()).register(idB);

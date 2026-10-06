@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 import 'chat_session.dart';
+import 'file_storage.dart';
 import 'identity_service.dart';
 
 enum ServerStatus { offline, connecting, online }
@@ -69,11 +70,16 @@ class ConnectionService extends ChangeNotifier {
     ChannelFactory? connect,
     this.reconnectDelay = const Duration(seconds: 2),
     this.connectTimeout = const Duration(seconds: kConnectTimeoutSeconds),
+    FileStorage? fileStorage,
   }) : _identity = identity,
        _serverUri = serverUri,
-       _connect = connect ?? WebSocketChannel.connect;
+       _connect = connect ?? WebSocketChannel.connect,
+       _fileStorage = fileStorage;
 
   final IdentityService _identity;
+
+  /// Where received files go (the platform's downloads when null).
+  final FileStorage? _fileStorage;
   final ChannelFactory _connect;
   final Duration reconnectDelay;
   final Duration connectTimeout;
@@ -131,6 +137,7 @@ class ConnectionService extends ChangeNotifier {
     session?.viewing = true;
     notifyListeners();
   }
+
   Uri get serverUri => _serverUri;
 
   /// Consecutive failed connection attempts (0 once online).
@@ -412,7 +419,12 @@ class ConnectionService extends ChangeNotifier {
   /// Opens a conversation and shows it. An older one with the same peer
   /// (ended, or crossed requests) is replaced in place.
   void _startSession(String sid, String peer) {
-    final session = ChatSession(sid: sid, peer: peer, send: _send);
+    final session = ChatSession(
+      sid: sid,
+      peer: peer,
+      send: _send,
+      files: _fileStorage,
+    );
     final previous = _sessions.values.where((s) => s.peer == peer).toList();
     if (previous.isEmpty) {
       _sessions[sid] = session;

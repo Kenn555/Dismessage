@@ -116,6 +116,7 @@ class ChatNotifications implements NotifierCallbacks {
     ChatMessage(:final text) => text.replaceAll(RegExp(r'\s+'), ' ').trim(),
     ChatImage() => '📷 Photo',
     ChatVoice() => '🎤 Message vocal',
+    ChatFile(:final name) => '📎 $name',
   });
 
   static String _shorten(String text) => text.length <= kNotificationLineLength
@@ -251,9 +252,7 @@ class _SessionNotice {
         _typingTimer = null;
         if (_disposed) return;
         final current = session.remoteDraft;
-        if (!_owner._visible &&
-            current.isNotEmpty &&
-            current != _shownDraft) {
+        if (!_owner._visible && current.isNotEmpty && current != _shownDraft) {
           _shownDraft = current;
           _show(alert: false);
         }

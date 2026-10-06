@@ -57,6 +57,22 @@ void main() {
       reply: 'aaaabbbbccccdddd',
     ),
     const ReactionFrame(sid: 'sid1', ref: 'aaaabbbbccccdddd', emoji: '❤️'),
+    const FileOfferFrame(
+      sid: 'sid1',
+      fid: '0011223344556677',
+      name: 'Rapport final (v2).pdf',
+      size: 1234567,
+      reply: 'aaaabbbbccccdddd',
+    ),
+    const FileAcceptFrame(sid: 'sid1', fid: '0011223344556677'),
+    const FileCancelFrame(sid: 'sid1', fid: '0011223344556677'),
+    const FileChunkFrame(
+      sid: 'sid1',
+      fid: '0011223344556677',
+      index: 3,
+      data: 'JVBERi0xLjQ=',
+    ),
+    const FileAckFrame(sid: 'sid1', fid: '0011223344556677', count: 4),
     const PresenceWatchFrame(ids: [a, b]),
     const PresenceFrame(id: b, online: true),
     const ErrorFrame(code: 'bad_frame', message: 'oops'),
@@ -104,6 +120,14 @@ void main() {
       expect((decoded as ReactionFrame).emoji, isEmpty);
     });
 
+    test('an empty file is allowed', () {
+      final decoded = Frame.decode(
+        '{"t":"file_offer","sid":"s","fid":"0011223344556677","name":"vide.txt","size":0}',
+      );
+      expect((decoded as FileOfferFrame).size, 0);
+      expect(decoded.reply, isNull);
+    });
+
     test('an empty presence list is allowed', () {
       final decoded = Frame.decode('{"t":"presence_watch","ids":[]}');
       expect((decoded as PresenceWatchFrame).ids, isEmpty);
@@ -147,6 +171,27 @@ void main() {
           '{"t":"voice","sid":"s","mid":"aaaabbbbccccdddd","ms":${(kMaxVoiceSeconds + 6) * 1000},"mime":"audio/mp4","data":"AA=="}',
       'voice too large':
           '{"t":"voice","sid":"s","mid":"aaaabbbbccccdddd","ms":1000,"mime":"audio/mp4","data":"${'A' * (kMaxVoiceDataLength + 1)}"}',
+      'file name empty':
+          '{"t":"file_offer","sid":"s","fid":"0011223344556677","name":"","size":1}',
+      'file name too long':
+          '{"t":"file_offer","sid":"s","fid":"0011223344556677","name":"${'x' * (kMaxFileNameLength + 1)}","size":1}',
+      'file name with control character':
+          '{"t":"file_offer","sid":"s","fid":"0011223344556677","name":"a\\u0000b","size":1}',
+      'file too large':
+          '{"t":"file_offer","sid":"s","fid":"0011223344556677","name":"a","size":${kMaxFileBytes + 1}}',
+      'file size negative':
+          '{"t":"file_offer","sid":"s","fid":"0011223344556677","name":"a","size":-1}',
+      'file bad id': '{"t":"file_accept","sid":"s","fid":"../../x"}',
+      'chunk index negative':
+          '{"t":"file_chunk","sid":"s","fid":"0011223344556677","i":-1,"data":"AA=="}',
+      'chunk index beyond max file':
+          '{"t":"file_chunk","sid":"s","fid":"0011223344556677","i":${FileChunks.count(kMaxFileBytes)},"data":"AA=="}',
+      'chunk too large':
+          '{"t":"file_chunk","sid":"s","fid":"0011223344556677","i":0,"data":"${'A' * (kMaxFileChunkDataLength + 1)}"}',
+      'chunk empty':
+          '{"t":"file_chunk","sid":"s","fid":"0011223344556677","i":0,"data":""}',
+      'ack not a number':
+          '{"t":"file_ack","sid":"s","fid":"0011223344556677","n":"1"}',
       'missing sid': '{"t":"draft_resync"}',
       'bad image id': '{"t":"image_request","sid":"s","img":"../etc"}',
       'image dimension zero':

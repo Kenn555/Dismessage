@@ -491,8 +491,7 @@ class _HomeScreenState extends State<HomeScreen> {
                           key: const Key('connect'),
                           icon: const Icon(Icons.arrow_forward_rounded),
                           label: const Text('Se connecter'),
-                          onPressed:
-                              _connection.status == ServerStatus.online
+                          onPressed: _connection.status == ServerStatus.online
                               ? _connect
                               : null,
                         ),
@@ -520,7 +519,9 @@ class _HomeScreenState extends State<HomeScreen> {
           listenable: _privacy,
           builder: (context, _) => IconButton(
             key: const Key('reveal-contact-ids'),
-            tooltip: _privacy.showContacts ? 'Masquer les ID' : 'Afficher les ID',
+            tooltip: _privacy.showContacts
+                ? 'Masquer les ID'
+                : 'Afficher les ID',
             icon: Icon(
               _privacy.showContacts
                   ? Icons.visibility_off_outlined

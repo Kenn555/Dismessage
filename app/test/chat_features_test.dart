@@ -500,7 +500,10 @@ void main() {
     }
 
     Future<void> scrollUp(WidgetTester tester) async {
-      await tester.drag(find.byKey(const Key('chat-list')), const Offset(0, 600));
+      await tester.drag(
+        find.byKey(const Key('chat-list')),
+        const Offset(0, 600),
+      );
       await tester.pump();
       final p = position(tester);
       expect(p.pixels, lessThan(p.maxScrollExtent - 400));
@@ -575,9 +578,7 @@ void main() {
       expect(p.pixels, p.maxScrollExtent);
     });
 
-    testWidgets('at the bottom, a received bubble is followed', (
-      tester,
-    ) async {
+    testWidgets('at the bottom, a received bubble is followed', (tester) async {
       await pumpChat(tester);
       await fill(tester);
       receiveText('Encore', mid: 'eeeeeeeeeeeeeeee');

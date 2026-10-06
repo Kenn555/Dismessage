@@ -10,6 +10,7 @@ import '../../services/camera_capture.dart';
 import '../../services/chat_session.dart';
 import '../../services/connection_service.dart';
 import '../../services/contacts_service.dart';
+import '../../services/file_storage.dart';
 import '../../services/id_privacy.dart';
 import '../../services/image_codec.dart';
 import '../../services/voice_player.dart';
@@ -20,6 +21,7 @@ import '../../widgets/contact_avatar.dart';
 import '../../widgets/contact_dialog.dart';
 import '../../widgets/dismessage_logo.dart';
 import '../../widgets/emoji_panel.dart';
+import '../../widgets/file_bubble.dart';
 import '../../widgets/image_bubble.dart';
 import '../../widgets/live_draft_bubble.dart';
 import '../../widgets/message_actions.dart';
@@ -57,6 +59,7 @@ class ChatScreen extends StatefulWidget {
     this.encodeImage = ImageCodec.encodeInBackground,
     this.createRecorder = platformVoiceRecorder,
     this.createAudioBackend = platformAudioBackend,
+    this.pickFile = platformPickFile,
     this.privacy,
     this.active = true,
   });
@@ -75,6 +78,9 @@ class ChatScreen extends StatefulWidget {
   final ImageEncoderFn encodeImage;
   final VoiceRecorder Function() createRecorder;
   final AudioBackend Function() createAudioBackend;
+
+  /// Chooses a file to send directly to the peer.
+  final FilePickerFn pickFile;
 
   /// Which IDs are shown in full (a saved contact's is masked by default).
   final IdPrivacy? privacy;
@@ -330,6 +336,46 @@ class _ChatScreenState extends State<ChatScreen> {
     }
   }
 
+  /// Offers a file: the peer must accept it before anything is sent.
+  Future<void> _chooseFile() async {
+    final ChosenFile? picked;
+    try {
+      picked = await widget.pickFile();
+    } catch (e) {
+      final cause = e.toString().split('\n').first;
+      if (mounted) _snack('Impossible de choisir un fichier ($cause).');
+      return _refocus();
+    }
+    if (picked == null || !mounted) return _refocus();
+    if (picked.size > kMaxFileBytes) {
+      await picked.close();
+      _snack(
+        'Fichier trop volumineux (${formatFileSize(picked.size)}, '
+        'maximum ${formatFileSize(kMaxFileBytes)}).',
+      );
+      return _refocus();
+    }
+    if (_session.sendFile(picked, replyTo: _replyTo) == null) {
+      await picked.close();
+    } else {
+      setState(() => _replyTo = null);
+    }
+    _refocus();
+  }
+
+  Future<void> _openSaved(ChatFile file, {bool folder = false}) async {
+    final saved = file.saved;
+    if (saved == null) return;
+    final ok = folder ? await saved.showInFolder() : await saved.open();
+    if (!ok && mounted) {
+      _snack(
+        folder
+            ? "Impossible d'ouvrir le dossier."
+            : 'Aucune application ne sait ouvrir ce fichier.',
+      );
+    }
+  }
+
   Future<void> _startRecording() async {
     final recorder = _recorder ??= widget.createRecorder();
     try {
@@ -476,6 +522,17 @@ class _ChatScreenState extends State<ChatScreen> {
         ChatVoice() => VoiceBubble(
           voice: entry,
           player: _player,
+          header: _quoteFor(entry, onBrand: entry.fromMe),
+        ),
+        ChatFile() => FileBubble(
+          file: entry,
+          onAccept: live ? () => _session.acceptFile(entry) : null,
+          onCancel: () {
+            _session.cancelFile(entry);
+            _refocus();
+          },
+          onOpen: () => _openSaved(entry),
+          onShowInFolder: () => _openSaved(entry, folder: true),
           header: _quoteFor(entry, onBrand: entry.fromMe),
         ),
       },
@@ -826,6 +883,12 @@ class _ChatScreenState extends State<ChatScreen> {
               counterText: '',
             ),
           ),
+        ),
+        IconButton(
+          key: const Key('send-file'),
+          tooltip: 'Envoyer un fichier',
+          icon: const Icon(Icons.attach_file_rounded),
+          onPressed: enabled ? _chooseFile : null,
         ),
         IconButton(
           key: const Key('send-image'),

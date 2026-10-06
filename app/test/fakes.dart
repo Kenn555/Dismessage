@@ -3,6 +3,7 @@ import 'dart:typed_data';
 
 import 'package:dismessage/services/camera_capture.dart';
 import 'package:dismessage/services/chat_session.dart';
+import 'package:dismessage/services/file_storage.dart';
 import 'package:dismessage/services/voice_player.dart';
 import 'package:dismessage/services/voice_recorder.dart';
 import 'package:dismessage_protocol/dismessage_protocol.dart';
@@ -152,4 +153,112 @@ class FakeCameraCapture implements CameraCapture {
 
   @override
   Future<void> close() async => closed = true;
+}
+
+/// A file "chosen" by the user, in memory.
+class FakeChosenFile implements ChosenFile {
+  FakeChosenFile(this.name, this.bytes, {int? size}) : _size = size;
+
+  @override
+  final String name;
+  final Uint8List bytes;
+  final int? _size;
+  bool closed = false;
+  final reads = <int>[];
+
+  /// Throws when reading this offset (a file gone meanwhile).
+  int? failAt;
+
+  @override
+  int get size => _size ?? bytes.length;
+
+  @override
+  Future<Uint8List> read(int offset, int length) async {
+    reads.add(offset);
+    if (offset == failAt) {
+      throw const FileStorageException('Fichier introuvable.');
+    }
+    return Uint8List.sublistView(bytes, offset, offset + length);
+  }
+
+  @override
+  Future<void> close() async => closed = true;
+}
+
+/// Received files, kept in memory.
+class MemoryFileStorage implements FileStorage {
+  final sinks = <MemoryFileSink>[];
+
+  /// Makes [create] fail (disk full, no Downloads folder…).
+  String? createError;
+
+  /// Makes the n-th write of every file fail.
+  int? failWrite;
+
+  @override
+  Future<FileSink> create(String name, int size) async {
+    if (createError != null) throw FileStorageException(createError!);
+    final sink = MemoryFileSink(name, failWrite);
+    sinks.add(sink);
+    return sink;
+  }
+}
+
+class MemoryFileSink implements FileSink {
+  MemoryFileSink(this.name, this._failWrite);
+
+  @override
+  final String name;
+  final int? _failWrite;
+  final data = BytesBuilder();
+  int writes = 0;
+  bool closed = false;
+  bool aborted = false;
+
+  @override
+  Future<void> write(Uint8List bytes) async {
+    if (++writes == _failWrite) {
+      throw const FileStorageException('Disque plein.');
+    }
+    data.add(bytes);
+  }
+
+  @override
+  Future<SavedFile> close() async {
+    closed = true;
+    return FakeSavedFile(name);
+  }
+
+  @override
+  Future<void> abort() async => aborted = true;
+}
+
+class FakeSavedFile implements SavedFile {
+  FakeSavedFile(this.name);
+
+  @override
+  final String name;
+  int opened = 0;
+  int shown = 0;
+
+  @override
+  String get location => 'Téléchargements';
+
+  @override
+  bool get canOpen => true;
+
+  @override
+  bool get canShowInFolder => true;
+
+  @override
+  Future<bool> open() async {
+    opened++;
+    return true;
+  }
+
+  @override
+  Future<bool> showInFolder() async {
+    shown++;
+    return true;
+  }
 }

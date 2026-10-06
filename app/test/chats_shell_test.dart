@@ -145,7 +145,10 @@ void main() {
       await tester.pumpAndSettle();
       await tester.tap(find.byKey(const ValueKey('rail-$alice')));
       await tester.pumpAndSettle();
-      expect(tester.widget<TextField>(aliceInput).controller!.text, 'Brouillon');
+      expect(
+        tester.widget<TextField>(aliceInput).controller!.text,
+        'Brouillon',
+      );
       expect(tester.widget<TextField>(aliceInput).focusNode!.hasFocus, isTrue);
       await cleanUp(tester);
     });
@@ -202,9 +205,7 @@ void main() {
       await cleanUp(tester);
     });
 
-    testWidgets('leaving the last conversation goes back home', (
-      tester,
-    ) async {
+    testWidgets('leaving the last conversation goes back home', (tester) async {
       await pumpHome(tester, phone);
       await start(tester, 's1', alice);
       await tester.tap(find.byKey(const Key('close-session')));

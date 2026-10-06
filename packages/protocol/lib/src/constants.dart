@@ -61,6 +61,23 @@ const int kMaxVoiceBytes = kMaxImageBytes;
 /// Maximum base64 length of a voice message.
 const int kMaxVoiceDataLength = (kMaxVoiceBytes + 2) ~/ 3 * 4;
 
+/// Largest file that can be sent (bytes). The receiver writes it to disk as
+/// it arrives (the browser keeps it in memory until the download).
+const int kMaxFileBytes = 512 * 1024 * 1024;
+
+/// Bytes per file chunk (the last one is shorter).
+const int kFileChunkBytes = 192 * 1024;
+
+/// Maximum base64 length of one file chunk.
+const int kMaxFileChunkDataLength = (kFileChunkBytes + 2) ~/ 3 * 4;
+
+/// Chunks sent ahead of the receiver's acknowledgements: bounds what the
+/// relay and the sockets buffer, and keeps room for live typing.
+const int kFileWindowChunks = 4;
+
+/// Longest file name (UTF-16 code units).
+const int kMaxFileNameLength = 255;
+
 /// Minimum delay between two silent updates of the "is typing" notification.
 const int kTypingNotificationMs = 1500;
 

@@ -18,6 +18,7 @@ class MainActivity : FlutterActivity() {
         // only lends itself for permission requests.
         EngineHolder.voice?.activity = this
         EngineHolder.notifications?.activity = this
+        EngineHolder.files?.activity = this
         if (EngineHolder.backgroundEnabled(this)) BackgroundService.start(this)
     }
 
@@ -31,6 +32,12 @@ class MainActivity : FlutterActivity() {
         } else {
             EngineHolder.notifications?.onOpened(tag)
         }
+    }
+
+    /** The system file picker answered (sending a file). */
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        if (EngineHolder.files?.onActivityResult(requestCode, resultCode, data) == true) return
+        super.onActivityResult(requestCode, resultCode, data)
     }
 
     override fun onRequestPermissionsResult(
@@ -50,6 +57,7 @@ class MainActivity : FlutterActivity() {
         if (EngineHolder.notifications?.activity === this) {
             EngineHolder.notifications?.activity = null
         }
+        if (EngineHolder.files?.activity === this) EngineHolder.files?.activity = null
         super.onDestroy()
     }
 }

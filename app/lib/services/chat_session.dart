@@ -5,9 +5,11 @@ import 'dart:math';
 import 'package:dismessage_protocol/dismessage_protocol.dart';
 import 'package:flutter/foundation.dart';
 
+import 'file_storage.dart';
 import 'image_codec.dart';
 
-/// One bubble of the conversation: a text, an image or a voice message.
+/// One bubble of the conversation: a text, an image, a voice message or a
+/// file.
 sealed class ChatEntry {
   ChatEntry({required this.id, required this.fromMe, this.replyTo})
     : at = DateTime.now();
@@ -86,6 +88,77 @@ class ChatVoice extends ChatEntry {
   final Duration duration;
 }
 
+enum FileStatus {
+  /// Offered: the receiver has not answered yet.
+  awaiting,
+
+  /// Accepted, chunks are flowing.
+  transferring,
+
+  /// Saved on the receiver's disk.
+  done,
+
+  /// The receiver refused it.
+  declined,
+
+  /// Stopped by one side, or the conversation ended.
+  cancelled,
+
+  /// A read or write error ([ChatFile.error]).
+  failed,
+}
+
+/// A file sent directly to the peer, after their confirmation.
+class ChatFile extends ChatEntry {
+  ChatFile({
+    required super.id,
+    required this.name,
+    required this.size,
+    required super.fromMe,
+    super.replyTo,
+  });
+
+  /// Sender's name (sanitized); see [saved] for the name on disk.
+  final String name;
+  final int size;
+  FileStatus status = FileStatus.awaiting;
+
+  /// Bytes written on the receiver's disk.
+  int transferred = 0;
+
+  /// Receiver: where the file was saved, once [FileStatus.done].
+  SavedFile? saved;
+
+  /// Why it [FileStatus.failed], in French.
+  String? error;
+
+  bool get active =>
+      status == FileStatus.awaiting || status == FileStatus.transferring;
+
+  double get progress => size == 0 ? 1 : transferred / size;
+}
+
+/// Sender side of a file transfer.
+class _Upload {
+  _Upload(this.source) : transfer = OutgoingTransfer(source.size);
+  final ChosenFile source;
+  final OutgoingTransfer transfer;
+
+  /// Reads happen one after the other, in chunk order.
+  Future<void> chain = Future.value();
+}
+
+/// Receiver side of a file transfer.
+class _Download {
+  _Download(int size) : transfer = IncomingTransfer(size);
+  final IncomingTransfer transfer;
+  FileSink? sink;
+  int written = 0;
+
+  /// Writes happen one after the other, in chunk order.
+  Future<void> chain = Future.value();
+}
+
 /// A recorded voice message, ready to be sent.
 class RecordedVoice {
   const RecordedVoice({
@@ -105,14 +178,20 @@ class ChatSession extends ChangeNotifier {
     required this.peer,
     required void Function(Frame frame) send,
     Random? random,
+    FileStorage? files,
   }) : _send = send,
        _random = random ?? Random.secure(),
+       _files = files,
        _sender = DraftSender(sid);
 
   final String sid;
   final String peer;
   final void Function(Frame frame) _send;
   final Random _random;
+  FileStorage? _files;
+  final Map<String, _Upload> _uploads = {};
+  final Map<String, _Download> _downloads = {};
+  bool _disposed = false;
   final DraftSender _sender;
   final DraftState _remote = DraftState();
   final List<ChatEntry> _entries = [];
@@ -247,6 +326,70 @@ class ChatSession extends ChangeNotifier {
     return entry;
   }
 
+  /// Offers [file] to the peer; nothing else leaves until they accept.
+  /// Returns null if the conversation ended or the file is too large.
+  ChatFile? sendFile(ChosenFile file, {ChatEntry? replyTo}) {
+    if (_peerLeft || file.size < 0 || file.size > kMaxFileBytes) return null;
+    final entry = ChatFile(
+      id: _newId(),
+      name: FileNames.sanitize(file.name),
+      size: file.size,
+      fromMe: true,
+      replyTo: _known(replyTo?.id),
+    );
+    _uploads[entry.id] = _Upload(file);
+    _add(entry);
+    _send(
+      FileOfferFrame(
+        sid: sid,
+        fid: entry.id,
+        name: entry.name,
+        size: entry.size,
+        reply: entry.replyTo,
+      ),
+    );
+    notifyListeners();
+    return entry;
+  }
+
+  /// Receiver accepts [file]: it is written to the downloads as it comes.
+  Future<void> acceptFile(ChatFile file) async {
+    if (file.fromMe || file.status != FileStatus.awaiting || _peerLeft) return;
+    if (_byId[file.id] != file) return;
+    file.status = FileStatus.transferring;
+    final download = _downloads[file.id] = _Download(file.size);
+    notifyListeners();
+    final FileSink sink;
+    try {
+      sink = await (_files ??= platformFileStorage()).create(
+        file.name,
+        file.size,
+      );
+    } catch (e) {
+      return _fail(file, _describe(e));
+    }
+    if (file.status != FileStatus.transferring || _disposed) {
+      // Cancelled meanwhile.
+      await sink.abort();
+      return;
+    }
+    download.sink = sink;
+    _send(FileAcceptFrame(sid: sid, fid: file.id));
+    // Nothing will come for an empty file: finish it now.
+    if (file.size == 0) _queueWrite(file, download, null);
+  }
+
+  /// Receiver refuses [file], or either side stops its transfer.
+  void cancelFile(ChatFile file) {
+    if (!file.active || _byId[file.id] != file) return;
+    file.status = !file.fromMe && file.status == FileStatus.awaiting
+        ? FileStatus.declined
+        : FileStatus.cancelled;
+    if (!_peerLeft) _send(FileCancelFrame(sid: sid, fid: file.id));
+    _release(file);
+    notifyListeners();
+  }
+
   /// Reacts to a peer bubble; the same emoji again removes the reaction.
   void react(ChatEntry entry, String emoji) {
     if (_peerLeft || entry.fromMe || _byId[entry.id] != entry) return;
@@ -339,6 +482,58 @@ class ChatSession extends ChangeNotifier {
             replyTo: _known(frame.reply),
           ),
         );
+      case FileOfferFrame(:final fid, :final size):
+        if (_byId.containsKey(fid)) return;
+        _add(
+          ChatFile(
+            id: fid,
+            name: FileNames.sanitize(frame.name),
+            size: size,
+            fromMe: false,
+            replyTo: _known(frame.reply),
+          ),
+        );
+      case FileAcceptFrame(:final fid):
+        final file = _byId[fid];
+        final upload = _uploads[fid];
+        if (file is! ChatFile || upload == null) return;
+        if (file.status != FileStatus.awaiting) return;
+        file.status = FileStatus.transferring;
+        _pump(file, upload);
+      case FileChunkFrame(:final fid, :final index):
+        final file = _byId[fid];
+        final download = _downloads[fid];
+        // Only what we accepted, in order, with the announced size.
+        if (file is! ChatFile || download?.sink == null) return;
+        if (file.status != FileStatus.transferring) return;
+        final bytes = _decode(frame.data);
+        if (bytes == null || !download!.transfer.accept(index, bytes.length)) {
+          return _fail(file, 'Données reçues invalides.');
+        }
+        _queueWrite(file, download, bytes);
+        return;
+      case FileAckFrame(:final fid, :final count):
+        final file = _byId[fid];
+        final upload = _uploads[fid];
+        if (file is! ChatFile || upload == null) return;
+        if (file.status != FileStatus.transferring) return;
+        if (!upload.transfer.ack(count)) {
+          return _fail(file, 'Accusé de réception invalide.');
+        }
+        file.transferred = upload.transfer.ackedBytes;
+        if (upload.transfer.done) {
+          file.status = FileStatus.done;
+          _release(file);
+        } else {
+          _pump(file, upload);
+        }
+      case FileCancelFrame(:final fid):
+        final file = _byId[fid];
+        if (file is! ChatFile || !file.active) return;
+        file.status = file.fromMe && file.status == FileStatus.awaiting
+            ? FileStatus.declined
+            : FileStatus.cancelled;
+        _release(file);
       case ReactionFrame(:final ref, :final emoji):
         final entry = _byId[ref];
         // The peer can only react to my bubbles.
@@ -358,7 +553,120 @@ class ChatSession extends ChangeNotifier {
         image.status = ImageStatus.unavailable;
       }
     }
+    _stopTransfers();
     notifyListeners();
+  }
+
+  void _stopTransfers() {
+    for (final file in _entries.whereType<ChatFile>()) {
+      if (!file.active) continue;
+      file.status = FileStatus.cancelled;
+      _release(file);
+    }
+  }
+
+  /// Sends the next chunks the window allows, read in order.
+  void _pump(ChatFile file, _Upload upload) {
+    for (
+      var index = upload.transfer.nextChunk();
+      index != null;
+      index = upload.transfer.nextChunk()
+    ) {
+      final chunk = index;
+      upload.chain = upload.chain
+          .then((_) async {
+            if (file.status != FileStatus.transferring) return;
+            final length = FileChunks.length(file.size, chunk);
+            final bytes = await upload.source.read(
+              FileChunks.offset(chunk),
+              length,
+            );
+            if (file.status != FileStatus.transferring) return;
+            if (bytes.length != length) {
+              throw const FileStorageException(
+                "Le fichier a changé pendant l'envoi.",
+              );
+            }
+            _send(
+              FileChunkFrame(
+                sid: sid,
+                fid: file.id,
+                index: chunk,
+                data: base64Encode(bytes),
+              ),
+            );
+          })
+          .catchError((Object e) {
+            _fail(file, _describe(e));
+          });
+    }
+  }
+
+  /// Writes [bytes] after the previous chunks, then acknowledges; the last
+  /// one (or none, for an empty file) finishes the file.
+  void _queueWrite(ChatFile file, _Download download, Uint8List? bytes) {
+    download.chain = download.chain
+        .then((_) async {
+          final sink = download.sink!;
+          if (file.status != FileStatus.transferring) return;
+          if (bytes != null) {
+            await sink.write(bytes);
+            download.written++;
+            file.transferred += bytes.length;
+          }
+          if (file.status != FileStatus.transferring) return;
+          if (download.written == download.transfer.chunkCount) {
+            final saved = await sink.close();
+            _downloads.remove(file.id);
+            file
+              ..saved = saved
+              ..status = FileStatus.done;
+          }
+          _send(FileAckFrame(sid: sid, fid: file.id, count: download.written));
+          _notify();
+        })
+        .catchError((Object e) {
+          _fail(file, _describe(e));
+        });
+  }
+
+  /// Stops a transfer after an error, telling the peer.
+  void _fail(ChatFile file, String message) {
+    if (!file.active) return;
+    file
+      ..status = FileStatus.failed
+      ..error = message;
+    if (!_peerLeft && !_disposed) {
+      _send(FileCancelFrame(sid: sid, fid: file.id));
+    }
+    _release(file);
+    _notify();
+  }
+
+  /// Frees what a stopped transfer holds; a partial download is deleted.
+  void _release(ChatFile file) {
+    final upload = _uploads.remove(file.id);
+    if (upload != null) {
+      upload.chain = upload.chain
+          .catchError((_) {})
+          .then((_) => upload.source.close())
+          .catchError((_) {});
+    }
+    final download = _downloads.remove(file.id);
+    if (download != null) {
+      download.chain = download.chain
+          .catchError((_) {})
+          .then((_) => download.sink?.abort())
+          .catchError((_) {});
+    }
+  }
+
+  static String _describe(Object error) => error is FileStorageException
+      ? error.message
+      : error.toString().split('\n').first;
+
+  void _notify() {
+    if (!_disposed) notifyListeners();
   }
 
   String _newId() => EntryId.generate(_random);
@@ -393,7 +701,9 @@ class ChatSession extends ChangeNotifier {
 
   @override
   void dispose() {
+    _disposed = true;
     _cancelFlush();
+    _stopTransfers();
     super.dispose();
   }
 }

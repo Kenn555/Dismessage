@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'constants.dart';
 import 'dismessage_id.dart';
 import 'entry_id.dart';
+import 'file_transfer.dart';
 import 'text_diff.dart';
 
 /// Thrown when a frame cannot be decoded or fails validation.
@@ -102,6 +103,32 @@ sealed class Frame {
           mime: r.audioMime(),
           data: r.base64('data', kMaxVoiceDataLength),
           reply: r.optionalEntryId('reply'),
+        ),
+        'file_offer' => FileOfferFrame(
+          sid: r.str('sid'),
+          fid: r.entryId('fid'),
+          name: r.fileName(),
+          size: r.fileSize(),
+          reply: r.optionalEntryId('reply'),
+        ),
+        'file_accept' => FileAcceptFrame(
+          sid: r.str('sid'),
+          fid: r.entryId('fid'),
+        ),
+        'file_cancel' => FileCancelFrame(
+          sid: r.str('sid'),
+          fid: r.entryId('fid'),
+        ),
+        'file_chunk' => FileChunkFrame(
+          sid: r.str('sid'),
+          fid: r.entryId('fid'),
+          index: r.chunkIndex('i', last: FileChunks.count(kMaxFileBytes) - 1),
+          data: r.base64('data', kMaxFileChunkDataLength),
+        ),
+        'file_ack' => FileAckFrame(
+          sid: r.str('sid'),
+          fid: r.entryId('fid'),
+          count: r.chunkIndex('n', last: FileChunks.count(kMaxFileBytes)),
         ),
         'reaction' => ReactionFrame(
           sid: r.str('sid'),
@@ -420,6 +447,96 @@ class VoiceFrame extends RelayedFrame {
   };
 }
 
+/// Sender → receiver: proposes a file. Nothing more leaves before the
+/// receiver accepts it ([FileAcceptFrame]).
+class FileOfferFrame extends RelayedFrame {
+  const FileOfferFrame({
+    required super.sid,
+    required this.fid,
+    required this.name,
+    required this.size,
+    this.reply,
+  });
+
+  /// File ID, also its bubble ID (an [EntryId]).
+  final String fid;
+
+  /// Name chosen by the sender; the receiver sanitizes it ([FileNames]).
+  final String name;
+  final int size;
+  final String? reply;
+  @override
+  String get type => 'file_offer';
+  @override
+  Map<String, Object?> fieldsToJson() => {
+    'sid': sid,
+    'fid': fid,
+    'name': name,
+    'size': size,
+    'reply': ?reply,
+  };
+}
+
+/// Receiver → sender: the user accepted the file; chunks may come.
+class FileAcceptFrame extends RelayedFrame {
+  const FileAcceptFrame({required super.sid, required this.fid});
+  final String fid;
+  @override
+  String get type => 'file_accept';
+  @override
+  Map<String, Object?> fieldsToJson() => {'sid': sid, 'fid': fid};
+}
+
+/// Either way: the receiver refused the file, or one side stopped the
+/// transfer (cancelled, or an error).
+class FileCancelFrame extends RelayedFrame {
+  const FileCancelFrame({required super.sid, required this.fid});
+  final String fid;
+  @override
+  String get type => 'file_cancel';
+  @override
+  Map<String, Object?> fieldsToJson() => {'sid': sid, 'fid': fid};
+}
+
+/// Sender → receiver: chunk [index] of the file (base64 [data], see
+/// [FileChunks]).
+class FileChunkFrame extends RelayedFrame {
+  const FileChunkFrame({
+    required super.sid,
+    required this.fid,
+    required this.index,
+    required this.data,
+  });
+  final String fid;
+  final int index;
+  final String data;
+  @override
+  String get type => 'file_chunk';
+  @override
+  Map<String, Object?> fieldsToJson() => {
+    'sid': sid,
+    'fid': fid,
+    'i': index,
+    'data': data,
+  };
+}
+
+/// Receiver → sender: the first [count] chunks are written to disk. When
+/// [count] covers the whole file, it is saved.
+class FileAckFrame extends RelayedFrame {
+  const FileAckFrame({
+    required super.sid,
+    required this.fid,
+    required this.count,
+  });
+  final String fid;
+  final int count;
+  @override
+  String get type => 'file_ack';
+  @override
+  Map<String, Object?> fieldsToJson() => {'sid': sid, 'fid': fid, 'n': count};
+}
+
 /// Reacts to the bubble [ref] of the peer; an empty [emoji] removes it.
 class ReactionFrame extends RelayedFrame {
   const ReactionFrame({
@@ -592,6 +709,30 @@ class _Reader {
     final value = str('mime');
     if (!_audioMime.hasMatch(value)) {
       throw const FrameFormatException('"mime" must be an audio type');
+    }
+    return value;
+  }
+
+  String fileName() {
+    final value = str('name');
+    if (!FileNames.isValid(value)) {
+      throw const FrameFormatException('"name" invalid');
+    }
+    return value;
+  }
+
+  int fileSize() {
+    final value = json['size'];
+    if (value is! int || value < 0 || value > kMaxFileBytes) {
+      throw const FrameFormatException('"size" invalid');
+    }
+    return value;
+  }
+
+  int chunkIndex(String key, {required int last}) {
+    final value = json[key];
+    if (value is! int || value < 0 || value > last) {
+      throw FrameFormatException('"$key" invalid');
     }
     return value;
   }
