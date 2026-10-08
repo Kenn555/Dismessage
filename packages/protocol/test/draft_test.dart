@@ -20,7 +20,9 @@ DraftUpdate deliver(DraftState state, RelayedFrame frame) => switch (frame) {
   FileCancelFrame() ||
   FileChunkFrame() ||
   FileAckFrame() ||
-  ReactionFrame() => DraftUpdate.ignored,
+  ReactionFrame() ||
+  KeyOfferFrame() ||
+  SealedFrame() => DraftUpdate.ignored,
 };
 
 void main() {

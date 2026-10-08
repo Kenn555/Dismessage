@@ -77,6 +77,14 @@ class FileHandler(private val context: Context) : MethodChannel.MethodCallHandle
                 null
             }
             "open" -> result.success(open(Uri.parse(call.argument<String>("uri")!!)))
+            // A web link from "À propos": only http(s), opened in the browser.
+            "openUrl" -> {
+                val url = Uri.parse(call.argument<String>("url")!!)
+                result.success(
+                    (url.scheme == "https" || url.scheme == "http") &&
+                        start(Intent(Intent.ACTION_VIEW, url)),
+                )
+            }
             "showDownloads" -> result.success(
                 start(Intent(DownloadManager.ACTION_VIEW_DOWNLOADS)),
             )

@@ -27,8 +27,8 @@ void main() {
     );
     await connection.start();
     channel.receive(const RegisteredFrame(id: me));
-    channel.receive(const SessionStartedFrame(sid: 's1', peer: alice));
-    channel.receive(const SessionStartedFrame(sid: 's2', peer: bob));
+    await channel.startSession('s1', alice);
+    await channel.startSession('s2', bob);
     await pumpEventQueue();
   });
 
@@ -37,8 +37,16 @@ void main() {
   ChatSession withPeer(String peer) =>
       connection.sessions.singleWhere((s) => s.peer == peer);
 
+  /// What the relay passes on; conversation frames sealed by the peer.
   Future<void> receive(Frame frame) async {
-    channel.receive(frame);
+    switch (frame) {
+      case SessionStartedFrame(:final sid, :final peer):
+        await channel.startSession(sid, peer);
+      case RelayedFrame():
+        await channel.receiveSecure(frame);
+      default:
+        channel.receive(frame);
+    }
     await pumpEventQueue();
   }
 
@@ -64,6 +72,33 @@ void main() {
     );
     expect(withPeer(bob).messages, hasLength(1));
     expect(withPeer(alice).messages, isEmpty);
+  });
+
+  test('a conversation frame in clear is never trusted', () async {
+    // The relay (or someone pretending to be the peer) without the keys.
+    channel.receive(const DraftSnapshotFrame(sid: 's1', seq: 1, text: 'Faux'));
+    channel.receive(
+      const MessageCommitFrame(
+        sid: 's1',
+        seq: 2,
+        text: 'Faux',
+        mid: '1111222233334444',
+      ),
+    );
+    await pumpEventQueue();
+    expect(withPeer(alice).remoteDraft, '');
+    expect(withPeer(alice).messages, isEmpty);
+    // Our own frames only leave sealed.
+    withPeer(alice).updateDraft('Bonjour');
+    await Future<void>.delayed(const Duration(milliseconds: kDraftBatchMs * 3));
+    expect(
+      channel.sink.sent.whereType<RelayedFrame>().where(
+        (f) => f is! SealedFrame && f is! KeyOfferFrame,
+      ),
+      isEmpty,
+    );
+    final opened = await channel.openedSent('s1');
+    expect(opened.whereType<DraftOpsFrame>(), isNotEmpty);
   });
 
   test('unread counts only peer bubbles of hidden conversations', () async {

@@ -63,6 +63,57 @@ void main() {
     expect(ContactsService(store).contacts.single.name, 'Ok');
   });
 
+  group('who can ask for a conversation', () {
+    const bob = '318343691';
+    const stranger = '123456789';
+
+    test('everyone by default; a blocked ID no more', () async {
+      final contacts = ContactsService(MemoryStore());
+      expect(contacts.allowsRequestFrom(stranger), isTrue);
+      await contacts.block(stranger);
+      expect(contacts.isBlocked(stranger), isTrue);
+      expect(contacts.allowsRequestFrom(stranger), isFalse);
+      await contacts.unblock(stranger);
+      expect(contacts.allowsRequestFrom(stranger), isTrue);
+    });
+
+    test(
+      'contacts only: unknown IDs are left out, even blocked contacts',
+      () async {
+        final contacts = ContactsService(MemoryStore());
+        await contacts.save(bob, 'Bob');
+        await contacts.setContactsOnly(true);
+        expect(contacts.allowsRequestFrom(bob), isTrue);
+        expect(contacts.allowsRequestFrom(stranger), isFalse);
+        await contacts.block(bob);
+        expect(contacts.allowsRequestFrom(bob), isFalse);
+      },
+    );
+
+    test('kept across restarts, separately from the address book', () async {
+      final store = MemoryStore();
+      final contacts = ContactsService(store);
+      await contacts.block(stranger);
+      await contacts.block(bob);
+      await contacts.setContactsOnly(true);
+      final again = ContactsService(store);
+      expect(again.blocked, [stranger, bob]);
+      expect(again.contactsOnly, isTrue);
+      expect(again.contacts, isEmpty, reason: 'blocking saves no contact');
+    });
+
+    test('invalid or corrupted entries are ignored', () async {
+      final store = MemoryStore()
+        ..values[ContactsService.blockedKey] = '["bad", "318343691", 3]';
+      expect(ContactsService(store).blocked, [bob]);
+      store.values[ContactsService.blockedKey] = '{oops';
+      expect(ContactsService(store).blocked, isEmpty);
+      final contacts = ContactsService(MemoryStore());
+      await contacts.block('42');
+      expect(contacts.blocked, isEmpty);
+    });
+  });
+
   test('notifies listeners', () async {
     final contacts = ContactsService(MemoryStore());
     var calls = 0;

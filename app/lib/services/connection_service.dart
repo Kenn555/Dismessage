@@ -54,6 +54,13 @@ class RequestCancelledEvent extends ConnectionEvent {
   final String from;
 }
 
+/// The peer's encryption key never came: the conversation was closed
+/// rather than sent in clear.
+class EncryptionFailedEvent extends ConnectionEvent {
+  const EncryptionFailedEvent(this.peer);
+  final String peer;
+}
+
 class ServerErrorEvent extends ConnectionEvent {
   const ServerErrorEvent(this.code, this.message);
   final String code;
@@ -61,6 +68,16 @@ class ServerErrorEvent extends ConnectionEvent {
 }
 
 typedef ChannelFactory = WebSocketChannel Function(Uri uri);
+
+/// End-to-end encryption of one conversation, with its frames kept in
+/// order through the asynchronous sealing and opening.
+class _Secure {
+  _Secure(String sid) : e2e = E2eSession(sid);
+  final E2eSession e2e;
+  Future<void> outgoing = Future.value();
+  Future<void> incoming = Future.value();
+  Timer? handshake;
+}
 
 /// Keeps the connection to the relay alive and dispatches its frames.
 class ConnectionService extends ChangeNotifier {
@@ -71,12 +88,18 @@ class ConnectionService extends ChangeNotifier {
     this.reconnectDelay = const Duration(seconds: 2),
     this.connectTimeout = const Duration(seconds: kConnectTimeoutSeconds),
     FileStorage? fileStorage,
-  }) : _identity = identity,
+    bool Function(String from)? acceptsRequestFrom,
+  }) : _acceptsRequestFrom = acceptsRequestFrom,
+       _identity = identity,
        _serverUri = serverUri,
        _connect = connect ?? WebSocketChannel.connect,
        _fileStorage = fileStorage;
 
   final IdentityService _identity;
+
+  /// Filters incoming chat requests (blocked IDs, "contacts only"): a
+  /// refused one is dropped without answer, no dialog, no notification.
+  final bool Function(String from)? _acceptsRequestFrom;
 
   /// Where received files go (the platform's downloads when null).
   final FileStorage? _fileStorage;
@@ -97,7 +120,11 @@ class ConnectionService extends ChangeNotifier {
   String? _pendingRequest;
   Identity? _me;
   Identity? _pendingRelease;
+
+  /// An `id_request` is out: the next `id_assigned` is ours.
+  bool _awaitingId = false;
   final Map<String, ChatSession> _sessions = {};
+  final Map<String, _Secure> _secure = {};
   ChatSession? _active;
   ServerStatus _status = ServerStatus.offline;
   bool _disposed = false;
@@ -115,6 +142,15 @@ class ConnectionService extends ChangeNotifier {
 
   /// Open conversations, oldest first (ended ones stay until closed).
   List<ChatSession> get sessions => List.unmodifiable(_sessions.values);
+
+  /// Whether [session] is end-to-end encrypted yet (keys exchanged).
+  bool isEncrypted(ChatSession session) =>
+      _secure[session.sid]?.e2e.isReady ?? false;
+
+  /// The code both people can compare to rule out an interception by the
+  /// relay; null until the keys are exchanged.
+  Future<String?> safetyCode(ChatSession session) async =>
+      await _secure[session.sid]?.e2e.safetyCode();
 
   /// The conversation on screen, if any.
   ChatSession? get active => _active;
@@ -177,7 +213,7 @@ class ConnectionService extends ChangeNotifier {
   void _sendWatch() => _send(PresenceWatchFrame(ids: _watched.toList()));
 
   Future<void> start() async {
-    _me ??= await _identity.load();
+    _me ??= _identity.load(_serverUri);
     notifyListeners();
     await _open();
   }
@@ -251,7 +287,30 @@ class ConnectionService extends ChangeNotifier {
   void _remove(ChatSession session) {
     _sessions.remove(session.sid);
     if (!session.peerLeft) _send(SessionLeaveFrame(sid: session.sid));
+    _forgetKeys(session.sid);
     session.dispose();
+  }
+
+  /// The conversation's keys only live as long as it does.
+  void _forgetKeys(String sid) => _secure.remove(sid)?.handshake?.cancel();
+
+  /// Conversation frames are sealed, in order, once the keys are exchanged;
+  /// nothing leaves unencrypted.
+  void _sendInSession(String sid, Frame frame) {
+    final secure = _secure[sid];
+    if (frame is! RelayedFrame) return _send(frame);
+    if (secure == null) return;
+    secure.outgoing = secure.outgoing.then((_) async {
+      final sealed = await secure.e2e.seal(frame);
+      if (_secure[sid] == secure) _send(sealed);
+    });
+  }
+
+  /// Runs [action] after the frames already received for [sid], in order.
+  void _inOrder(String sid, FutureOr<void> Function(_Secure secure) action) {
+    final secure = _secure[sid];
+    if (secure == null) return;
+    secure.incoming = secure.incoming.then((_) => action(secure));
   }
 
   void _markAllPeerLeft() {
@@ -260,16 +319,20 @@ class ConnectionService extends ChangeNotifier {
     }
   }
 
-  /// Switches to a brand new ID; the old one is released on the server.
+  /// Switches to a brand new ID, given by the relay (online only); the old
+  /// one is released once the new one is registered.
   Future<void> regenerateId() async {
+    if (_status != ServerStatus.online) return;
     closeAll();
     _pendingRelease ??= _me;
-    _me = await _identity.regenerate();
-    if (_status != ServerStatus.offline) {
-      _setStatus(ServerStatus.connecting);
-      _register();
-    }
-    notifyListeners();
+    _requestId();
+  }
+
+  /// Asks the relay for a new ID (none yet, or ours was refused).
+  void _requestId() {
+    _awaitingId = true;
+    _send(const IdRequestFrame());
+    _startRegisterTimer();
   }
 
   /// The page is being left (web): the browser may keep it frozen in its
@@ -300,6 +363,10 @@ class ConnectionService extends ChangeNotifier {
     if (uri == _serverUri) return;
     _serverUri = uri;
     _generation++;
+    // Each relay has its own identity (it signs the secrets it gives).
+    _me = _identity.load(uri);
+    _pendingRelease = null;
+    _awaitingId = false;
     _reconnectTimer?.cancel();
     _clearRequest();
     final channel = _channel;
@@ -353,8 +420,13 @@ class ConnectionService extends ChangeNotifier {
   }
 
   void _register() {
-    final me = _me!;
+    final me = _me;
+    if (me == null) return _requestId();
     _send(RegisterFrame(id: me.id, secret: me.secret));
+    _startRegisterTimer();
+  }
+
+  void _startRegisterTimer() {
     _registerTimer?.cancel();
     _registerTimer = Timer(connectTimeout, () {
       if (_status == ServerStatus.online) return;
@@ -387,13 +459,27 @@ class ConnectionService extends ChangeNotifier {
         if (!_watched.contains(id) || _presence[id] == online) return;
         _presence[id] = online;
         notifyListeners();
-      case IdTakenFrame(:final id) when id == _me?.id:
-        // Someone else owns this ID on the server: pick a new one.
-        _me = await _identity.regenerate();
-        _register();
+      case IdAssignedFrame(:final id, :final secret)
+          when _awaitingId || id == _me?.id:
+        // A new ID, or ours now signed (registered right after): kept.
+        final identity = Identity(id: id, secret: secret);
+        final isNew = _awaitingId;
+        _awaitingId = false;
+        _me = identity;
+        await _identity.save(_serverUri, identity);
+        if (isNew) _register();
         notifyListeners();
+      case IdTakenFrame(:final id) when id == _me?.id:
+        // Someone else owns this ID on the relay: ask it for a new one.
+        _requestId();
+      case ErrorFrame(:final code)
+          when code == ErrorCodes.unsignedId && _status != ServerStatus.online:
+        // Our own ID (older version), unknown to this relay: get one.
+        _requestId();
       case IncomingRequestFrame(:final from):
-        _events.add(IncomingRequestEvent(from));
+        if (_acceptsRequestFrom?.call(from) ?? true) {
+          _events.add(IncomingRequestEvent(from));
+        }
       case SessionStartedFrame(:final sid, :final peer):
         _clearRequest();
         _startSession(sid, peer);
@@ -406,10 +492,48 @@ class ConnectionService extends ChangeNotifier {
       case ConnectCancelFrame(:final peer):
         _events.add(RequestCancelledEvent(peer));
       case PeerLeftFrame(:final sid):
-        _sessions[sid]?.markPeerLeft();
+        // After the frames still being opened.
+        if (_secure.containsKey(sid)) {
+          _inOrder(sid, (_) => _sessions[sid]?.markPeerLeft());
+        } else {
+          _sessions[sid]?.markPeerLeft();
+        }
+      case KeyOfferFrame(:final sid) && final offer:
+        _inOrder(sid, (secure) async {
+          try {
+            await secure.e2e.accept(offer);
+            secure.handshake?.cancel();
+            notifyListeners();
+          } on E2eException {
+            // A second or invalid key: the first one stays.
+          }
+        });
+      case SealedFrame(:final sid) && final sealed:
+        _inOrder(sid, (secure) async {
+          try {
+            final inner = await secure.e2e.open(sealed);
+            if (_secure[sid] == secure) _sessions[sid]?.receive(inner);
+          } on E2eException {
+            // Altered, replayed or not from the peer: dropped.
+          }
+        });
       case RelayedFrame():
-        _sessions[frame.sid]?.receive(frame);
+        // Unencrypted conversation frame: never trusted.
+        break;
+      case ErrorFrame(:final code, :final message)
+          when _status != ServerStatus.online &&
+              (code == ErrorCodes.rateLimited ||
+                  code == ErrorCodes.tooManyConnections ||
+                  code == ErrorCodes.updateRequired):
+        // Registration refused: retry later, and show why on the home screen.
+        _registerTimer?.cancel();
+        final channel = _channel;
+        _closeChannel();
+        channel?.sink.close();
+        _fail(message);
       case ErrorFrame(:final code, :final message):
+        // A refused chat request gets no answer: stop waiting for one.
+        if (code == ErrorCodes.rateLimited) _clearRequest();
         _events.add(ServerErrorEvent(code, message));
       default:
         break;
@@ -419,12 +543,20 @@ class ConnectionService extends ChangeNotifier {
   /// Opens a conversation and shows it. An older one with the same peer
   /// (ended, or crossed requests) is replaced in place.
   void _startSession(String sid, String peer) {
+    final secure = _secure[sid] = _Secure(sid);
+    // Our key first: every later frame of ours waits for the peer's.
+    secure.outgoing = secure.e2e.offer().then(_send);
     final session = ChatSession(
       sid: sid,
       peer: peer,
-      send: _send,
+      send: (frame) => _sendInSession(sid, frame),
       files: _fileStorage,
     );
+    secure.handshake = Timer(const Duration(seconds: kE2eHandshakeSeconds), () {
+      if (_sessions[sid] != session || secure.e2e.isReady) return;
+      closeSession(session);
+      _events.add(EncryptionFailedEvent(peer));
+    });
     final previous = _sessions.values.where((s) => s.peer == peer).toList();
     if (previous.isEmpty) {
       _sessions[sid] = session;
@@ -442,6 +574,7 @@ class ConnectionService extends ChangeNotifier {
       for (final stale in previous) {
         if (!stale.peerLeft) _send(SessionLeaveFrame(sid: stale.sid));
         if (_active == stale) _active = null;
+        _forgetKeys(stale.sid);
         stale.dispose();
       }
     }
@@ -511,6 +644,9 @@ class ConnectionService extends ChangeNotifier {
       session.dispose();
     }
     _sessions.clear();
+    for (final sid in _secure.keys.toList()) {
+      _forgetKeys(sid);
+    }
     _events.close();
     super.dispose();
   }

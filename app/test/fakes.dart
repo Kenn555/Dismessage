@@ -25,12 +25,65 @@ class RecordingSink implements WebSocketSink {
 }
 
 /// A connected channel whose server side is driven by the test.
+///
+/// It can also play the peer of encrypted conversations: [startSession]
+/// opens one with a key exchange, [receiveSecure] seals what the peer says,
+/// [openedSent] decrypts what the app said.
 class ScriptedChannel implements WebSocketChannel {
   final server = StreamController<Object?>();
   @override
   final RecordingSink sink = RecordingSink();
 
   void receive(Frame frame) => server.add(frame.encode());
+
+  final Map<String, E2eSession> _peers = {};
+  final Map<String, List<RelayedFrame>> _opened = {};
+
+  /// The relay starts conversation [sid] with [peer], who sends its key.
+  Future<void> startSession(String sid, String peer) async {
+    final e2e = _peers[sid] = E2eSession(sid);
+    receive(SessionStartedFrame(sid: sid, peer: peer));
+    receive(await e2e.offer());
+  }
+
+  /// Takes the app's key for [sid] once it has been sent.
+  Future<E2eSession> _ready(String sid) async {
+    final e2e = _peers[sid]!;
+    for (var i = 0; !e2e.isReady && i < 1000; i++) {
+      final offer = sink.sent.whereType<KeyOfferFrame>().where(
+        (f) => f.sid == sid,
+      );
+      if (offer.isNotEmpty) {
+        await e2e.accept(offer.first);
+      } else {
+        await Future<void>.microtask(() {});
+      }
+    }
+    return e2e;
+  }
+
+  /// The peer sends [frame], sealed as the app expects.
+  Future<void> receiveSecure(RelayedFrame frame) async {
+    final e2e = await _ready(frame.sid);
+    receive(await e2e.seal(frame));
+  }
+
+  /// The safety code on the peer's side of [sid].
+  Future<String?> peerSafetyCode(String sid) async =>
+      (await _ready(sid)).safetyCode();
+
+  /// Everything the app sent in [sid] so far, decrypted.
+  Future<List<RelayedFrame>> openedSent(String sid) async {
+    final e2e = await _ready(sid);
+    final opened = _opened[sid] ??= [];
+    final sealed = sink.sent.whereType<SealedFrame>().where(
+      (f) => f.sid == sid,
+    );
+    for (final frame in sealed.skip(opened.length)) {
+      opened.add(await e2e.open(frame));
+    }
+    return opened;
+  }
 
   @override
   Future<void> get ready async {}

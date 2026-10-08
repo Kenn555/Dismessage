@@ -65,12 +65,12 @@ void main() {
   }
 
   Future<void> start(WidgetTester tester, String sid, String peer) async {
-    channel.receive(SessionStartedFrame(sid: sid, peer: peer));
+    await channel.startSession(sid, peer);
     await tester.pumpAndSettle();
   }
 
   Future<void> message(WidgetTester tester, String sid, String text) async {
-    channel.receive(
+    await channel.receiveSecure(
       MessageCommitFrame(sid: sid, seq: 1, text: text, mid: 'aaaabbbbccccdddd'),
     );
     await tester.pumpAndSettle();
@@ -81,6 +81,25 @@ void main() {
 
   const phone = Size(600, 1000);
   const desktop = Size(1280, 900);
+
+  testWidgets('the chat menu shows the safety code of the peer', (
+    tester,
+  ) async {
+    await pumpHome(tester, phone);
+    await start(tester, 's1', alice);
+    final code = await channel.peerSafetyCode('s1');
+    await tester.pump();
+    await tester.tap(find.byKey(const Key('chat-menu')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('verify-encryption')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('encryption-dialog')), findsOneWidget);
+    expect(code, isNotNull);
+    expect(find.text(code!), findsOneWidget);
+    await tester.tap(find.text('Fermer'));
+    await tester.pumpAndSettle();
+    await cleanUp(tester);
+  });
 
   group('narrow screen', () {
     testWidgets('floating avatars from two conversations', (tester) async {

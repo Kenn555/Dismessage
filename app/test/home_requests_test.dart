@@ -15,6 +15,7 @@ void main() {
   late ScriptedChannel channel;
   late ConnectionService connection;
   late ContactsService contacts;
+  late MemoryStore store;
 
   Future<void> pumpHome(WidgetTester tester) async {
     // Tall surface so the contact list is on screen.
@@ -22,13 +23,14 @@ void main() {
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.reset);
     channel = ScriptedChannel();
-    final store = MemoryStore()
+    store = MemoryStore()
       ..values[IdentityService.idKey] = me
       ..values[IdentityService.secretKey] = 'secret';
     connection = ConnectionService(
       identity: IdentityService(store),
       serverUri: Uri.parse('ws://test/ws'),
       connect: (_) => channel,
+      acceptsRequestFrom: (from) => contacts.allowsRequestFrom(from),
     );
     await tester.pumpWidget(
       MaterialApp(
@@ -111,6 +113,93 @@ void main() {
     await cleanUp(tester);
   });
 
+  testWidgets('regenerating asks for confirmation, then the relay gives it', (
+    tester,
+  ) async {
+    await pumpHome(tester);
+    await tester.tap(find.byKey(const Key('regenerate-id')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Annuler'));
+    await tester.pumpAndSettle();
+    expect(channel.sink.sent.last, isNot(isA<IdRequestFrame>()));
+
+    await tester.tap(find.byKey(const Key('regenerate-id')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Générer'));
+    await tester.pump();
+    expect(channel.sink.sent.last, isA<IdRequestFrame>());
+
+    channel.receive(const IdAssignedFrame(id: '123456789', secret: 'new'));
+    await tester.pump();
+    final register = channel.sink.sent.last as RegisterFrame;
+    expect(register.id, '123456789');
+    channel.receive(const RegisteredFrame(id: '123456789'));
+    await tester.pump();
+
+    // The old ID is released only once the new one is registered.
+    final release = channel.sink.sent.last as ReleaseFrame;
+    expect(release.id, me);
+    expect(connection.myId, '123456789');
+    expect(find.text('123 *** 789'), findsOneWidget);
+    final relay = Uri.parse('ws://test/ws');
+    expect(
+      IdentityService(store).load(relay)!.id,
+      '123456789',
+      reason: 'kept for this relay',
+    );
+    await cleanUp(tester);
+  });
+
+  testWidgets('no key from the peer: closed, nothing sent in clear', (
+    tester,
+  ) async {
+    await pumpHome(tester);
+    // The peer never sends its key (or the relay drops it).
+    channel.receive(const SessionStartedFrame(sid: 's1', peer: peer));
+    await tester.pump();
+    final session = connection.sessions.single;
+    session.updateDraft('Personne ne doit lire ça');
+    await tester.pump(const Duration(seconds: kE2eHandshakeSeconds));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+
+    expect(connection.sessions, isEmpty);
+    expect(channel.sink.sent.whereType<SessionLeaveFrame>().single.sid, 's1');
+    expect(channel.sink.sent.whereType<SealedFrame>(), isEmpty);
+    expect(
+      find.text(
+        'Chiffrement impossible avec 318 343 691 : '
+        'conversation fermée, rien n’a été envoyé.',
+      ),
+      findsOneWidget,
+    );
+    await cleanUp(tester);
+  });
+
+  testWidgets('a request refused by the relay limit ends the wait', (
+    tester,
+  ) async {
+    await pumpHome(tester);
+    await sendRequest(tester);
+    channel.receive(
+      const ErrorFrame(
+        code: ErrorCodes.rateLimited,
+        message: 'Trop de tentatives, réessayez dans un instant.',
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+
+    expect(find.byKey(const Key('pending-request')), findsNothing);
+    expect(find.byKey(const Key('connect')), findsOneWidget);
+    expect(
+      find.text('Trop de tentatives, réessayez dans un instant.'),
+      findsOneWidget,
+    );
+    expect(connection.status, ServerStatus.online);
+    await cleanUp(tester);
+  });
+
   testWidgets('the request expires without answer', (tester) async {
     await pumpHome(tester);
     await sendRequest(tester);
@@ -166,6 +255,79 @@ void main() {
     expect(find.text('Demande de conversation'), findsNothing);
     expect(channel.sink.sent.whereType<ConnectRejectFrame>(), hasLength(1));
     await cleanUp(tester);
+  });
+
+  group('blocking', () {
+    Future<void> openSettings(WidgetTester tester) async {
+      await tester.tap(find.byKey(const Key('settings')));
+      await tester.pumpAndSettle();
+    }
+
+    testWidgets('"Bloquer" refuses, blocks, and the next request is ignored', (
+      tester,
+    ) async {
+      await pumpHome(tester);
+      channel.receive(const IncomingRequestFrame(from: peer));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('request-block')));
+      await tester.pumpAndSettle();
+
+      expect((channel.sink.sent.last as ConnectRejectFrame).peer, peer);
+      expect(contacts.isBlocked(peer), isTrue);
+      expect(find.text('318 343 691 est bloqué.'), findsOneWidget);
+
+      final sent = channel.sink.sent.length;
+      channel.receive(const IncomingRequestFrame(from: peer));
+      await tester.pumpAndSettle();
+      expect(find.byType(AlertDialog), findsNothing);
+      // No answer either: the requester cannot tell.
+      expect(channel.sink.sent, hasLength(sent));
+      await cleanUp(tester);
+    });
+
+    testWidgets('contacts only: a stranger is ignored, a contact is not', (
+      tester,
+    ) async {
+      await pumpHome(tester);
+      await openSettings(tester);
+      await tester.tap(find.byKey(const Key('contacts-only-switch')));
+      await tester.pumpAndSettle();
+      expect(contacts.contactsOnly, isTrue);
+      await tester.tapAt(const Offset(10, 10));
+      await tester.pumpAndSettle();
+
+      channel.receive(const IncomingRequestFrame(from: peer));
+      await tester.pumpAndSettle();
+      expect(find.byType(AlertDialog), findsNothing);
+
+      await contacts.save(peer, 'Bob');
+      channel.receive(const IncomingRequestFrame(from: peer));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('Bob'), findsWidgets);
+      expect(find.byType(AlertDialog), findsOneWidget);
+      await cleanUp(tester);
+    });
+
+    testWidgets('a contact is blocked from its menu, unblocked in settings', (
+      tester,
+    ) async {
+      await pumpHome(tester);
+      await contacts.save(peer, 'Bob');
+      await tester.pump();
+      await tester.tap(find.byKey(const ValueKey('contact-menu-$peer')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Bloquer'));
+      await tester.pumpAndSettle();
+      expect(contacts.isBlocked(peer), isTrue);
+
+      await openSettings(tester);
+      expect(find.text('Bob'), findsWidgets);
+      await tester.tap(find.byKey(const ValueKey('unblock-$peer')));
+      await tester.pumpAndSettle();
+      expect(contacts.isBlocked(peer), isFalse);
+      expect(find.byKey(const Key('no-blocked')), findsOneWidget);
+      await cleanUp(tester);
+    });
   });
 
   group('contacts', () {

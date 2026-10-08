@@ -557,6 +557,94 @@ class _ChatScreenState extends State<ChatScreen> {
   /// Leaves (or, once the peer is gone, closes) this conversation.
   void _close() => widget.connection.closeSession(_session);
 
+  /// The safety code: the same on both screens unless the relay sits in the
+  /// middle of the key exchange.
+  Future<void> _verifyEncryption() async {
+    final code = await widget.connection.safetyCode(_session);
+    if (!mounted) return;
+    final name = widget.contacts.label(_session.peer);
+    final theme = Theme.of(context);
+    await showDialog<void>(
+      context: context,
+      builder: (context) => AlertDialog(
+        key: const Key('encryption-dialog'),
+        icon: const Icon(Icons.lock_outline_rounded),
+        title: const Text('Chiffrement de bout en bout'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              code == null
+                  ? 'Échange des clés en cours…'
+                  : 'Comparez ce code avec celui de $name, de vive voix ou '
+                        'par un autre moyen. S’il est identique, personne, pas '
+                        'même le serveur, ne peut lire cette conversation.',
+            ),
+            if (code != null) ...[
+              const SizedBox(height: 16),
+              SelectableText(
+                code,
+                key: const Key('safety-code'),
+                textAlign: TextAlign.center,
+                style: theme.textTheme.titleLarge?.copyWith(
+                  fontFeatures: const [FontFeature.tabularFigures()],
+                  letterSpacing: 1.5,
+                ),
+              ),
+              const SizedBox(height: 12),
+              Text(
+                'Le code change à chaque conversation.',
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: theme.colorScheme.onSurfaceVariant,
+                ),
+              ),
+            ],
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Fermer'),
+          ),
+        ],
+      ),
+    );
+    _refocus();
+  }
+
+  /// Ends the conversation and ignores the peer's requests from now on.
+  Future<void> _blockPeer() async {
+    final peer = _session.peer;
+    final name = widget.contacts.label(peer);
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text('Bloquer $name ?'),
+        content: const Text(
+          'La conversation se ferme et ses demandes seront ignorées, sans '
+          'qu’il le sache. Vous pourrez le débloquer dans les réglages.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Annuler'),
+          ),
+          FilledButton(
+            key: const Key('confirm-block'),
+            style: FilledButton.styleFrom(
+              backgroundColor: Theme.of(context).colorScheme.error,
+            ),
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Bloquer'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return _refocus();
+    await widget.contacts.block(peer);
+    _close();
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -653,7 +741,33 @@ class _ChatScreenState extends State<ChatScreen> {
               onPressed: _close,
             ),
           ),
-          const SizedBox(width: 8),
+          PopupMenuButton<VoidCallback>(
+            key: const Key('chat-menu'),
+            tooltip: 'Plus',
+            icon: const Icon(Icons.more_vert_rounded),
+            onSelected: (action) => action(),
+            itemBuilder: (_) => [
+              PopupMenuItem(
+                key: const Key('verify-encryption'),
+                value: _verifyEncryption,
+                child: const ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: Icon(Icons.lock_outline_rounded),
+                  title: Text('Vérifier le chiffrement'),
+                ),
+              ),
+              PopupMenuItem(
+                key: const Key('block-peer'),
+                value: _blockPeer,
+                child: const ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: Icon(Icons.block_rounded),
+                  title: Text('Bloquer'),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(width: 4),
         ],
       ),
       body: ListenableBuilder(

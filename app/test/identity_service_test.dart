@@ -1,46 +1,60 @@
 import 'package:dismessage/services/identity_service.dart';
-import 'package:dismessage_protocol/dismessage_protocol.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+final prod = Uri.parse('wss://dismessage.onrender.com/ws');
+final local = Uri.parse('ws://localhost:8080/ws');
+
 void main() {
-  test('first launch creates a valid identity', () async {
-    final identity = await IdentityService(MemoryStore()).load();
-    expect(DismessageId.isValid(identity.id), isTrue);
-    expect(identity.secret, isNotEmpty);
+  test('first launch: no identity, the relay gives one', () {
+    expect(IdentityService(MemoryStore()).load(prod), isNull);
   });
 
-  test('ID is stable across launches', () async {
+  test('the identity a relay gave is kept across launches', () async {
     final store = MemoryStore();
-    final first = await IdentityService(store).load();
-    final second = await IdentityService(store).load();
-    expect(second.id, first.id);
-    expect(second.secret, first.secret);
+    await IdentityService(
+      store,
+    ).save(prod, const Identity(id: '482913075', secret: 'signed'));
+    final again = IdentityService(store).load(prod)!;
+    expect(again.id, '482913075');
+    expect(again.secret, 'signed');
   });
 
-  test('regenerate replaces the stored identity', () async {
-    final store = MemoryStore();
+  test('one identity per relay, kept when switching back', () async {
+    final service = IdentityService(MemoryStore());
+    await service.save(prod, const Identity(id: '482913075', secret: 'p'));
+    expect(service.load(local), isNull);
+    await service.save(local, const Identity(id: '123456789', secret: 'l'));
+    expect(service.load(prod)!.id, '482913075');
+    expect(service.load(local)!.id, '123456789');
+  });
+
+  test('the ID of an older version is tried on a new relay', () async {
+    final store = MemoryStore()
+      ..values[IdentityService.idKey] = '482913075'
+      ..values[IdentityService.secretKey] = 'my-own';
     final service = IdentityService(store);
-    final before = await service.load();
-    final after = await service.regenerate();
-    expect(after.id, isNot(before.id));
-    expect((await IdentityService(store).load()).id, after.id);
+    expect(service.load(prod)!.secret, 'my-own');
+    await service.save(prod, const Identity(id: '482913075', secret: 'signed'));
+    expect(service.load(prod)!.secret, 'signed');
+    // Never overwritten: still tried on another relay.
+    expect(service.load(local)!.secret, 'my-own');
   });
 
-  test('corrupted stored ID is replaced', () async {
+  test('a corrupted stored ID is ignored', () {
     final store = MemoryStore()
       ..values[IdentityService.idKey] = 'oops'
       ..values[IdentityService.secretKey] = 'x';
-    final identity = await IdentityService(store).load();
-    expect(DismessageId.isValid(identity.id), isTrue);
+    expect(IdentityService(store).load(prod), isNull);
   });
 
   test('PrefsStore persists through SharedPreferences', () async {
     SharedPreferences.setMockInitialValues({});
     final prefs = await SharedPreferences.getInstance();
-    final first = await IdentityService(PrefsStore(prefs)).load();
-    expect(prefs.getString(IdentityService.idKey), first.id);
-    final again = await IdentityService(PrefsStore(prefs)).load();
-    expect(again.id, first.id);
+    await IdentityService(
+      PrefsStore(prefs),
+    ).save(prod, const Identity(id: '482913075', secret: 's'));
+    expect(prefs.getString(IdentityService.idKeyFor(prod)), '482913075');
+    expect(IdentityService(PrefsStore(prefs)).load(prod)!.id, '482913075');
   });
 }

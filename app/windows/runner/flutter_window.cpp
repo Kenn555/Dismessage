@@ -4,6 +4,23 @@
 
 #include "flutter/generated_plugin_registrant.h"
 
+#ifndef WDA_EXCLUDEFROMCAPTURE
+#define WDA_EXCLUDEFROMCAPTURE 0x00000011
+#endif
+
+namespace {
+
+// Keeps conversations out of screenshots and screen recordings: the window
+// is left out of captures (Windows 10 2004+), or shown black in them on older
+// versions.
+void ExcludeFromCapture(HWND window) {
+  if (!::SetWindowDisplayAffinity(window, WDA_EXCLUDEFROMCAPTURE)) {
+    ::SetWindowDisplayAffinity(window, WDA_MONITOR);
+  }
+}
+
+}  // namespace
+
 FlutterWindow::FlutterWindow(const flutter::DartProject& project)
     : project_(project) {}
 
@@ -24,6 +41,7 @@ bool FlutterWindow::OnCreate() {
   if (!flutter_controller_->engine() || !flutter_controller_->view()) {
     return false;
   }
+  ExcludeFromCapture(GetHandle());
   RegisterPlugins(flutter_controller_->engine());
   notifications_ = std::make_unique<Notifications>(
       flutter_controller_->engine()->messenger(), GetHandle());

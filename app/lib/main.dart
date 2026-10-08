@@ -4,10 +4,12 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'config.dart';
 import 'features/home/home_screen.dart';
+import 'features/legal/consent_gate.dart';
 import 'services/background_mode.dart';
 import 'services/connection_service.dart';
 import 'services/contacts_service.dart';
 import 'services/identity_service.dart';
+import 'services/legal_consent.dart';
 import 'services/notifications/chat_notifications.dart';
 import 'services/notifications/system_notifier.dart';
 import 'services/page_lifecycle.dart';
@@ -21,9 +23,20 @@ Future<void> main() async {
   final connection = ConnectionService(
     identity: IdentityService(store),
     serverUri: settings.serverUri,
+    acceptsRequestFrom: contacts.allowsRequestFrom,
   );
-  connection.start();
-  watchPageLifecycle(onLeave: connection.suspend, onReturn: connection.resume);
+  // No connection to the relay (no ID, no IP seen) before the user is of age
+  // and has accepted the terms.
+  final consent = LegalConsent(store);
+  void startConnection() {
+    connection.start();
+    watchPageLifecycle(
+      onLeave: connection.suspend,
+      onReturn: connection.resume,
+    );
+  }
+
+  if (consent.accepted) startConnection();
   final notifications = ChatNotifications(
     connection: connection,
     contacts: contacts,
@@ -46,6 +59,8 @@ Future<void> main() async {
       settings: settings,
       contacts: contacts,
       background: BackgroundMode(store),
+      consent: consent,
+      onConsent: startConnection,
     ),
   );
 }
@@ -56,8 +71,15 @@ class DismessageApp extends StatelessWidget {
     required this.connection,
     required this.settings,
     required this.contacts,
+    required this.consent,
+    required this.onConsent,
     this.background,
   });
+
+  final LegalConsent consent;
+
+  /// Starts the connection once the terms are accepted.
+  final VoidCallback onConsent;
 
   final ConnectionService connection;
   final ServerSettings settings;
@@ -71,11 +93,15 @@ class DismessageApp extends StatelessWidget {
       debugShowCheckedModeBanner: false,
       theme: AppTheme.light(),
       darkTheme: AppTheme.dark(),
-      home: HomeScreen(
-        connection: connection,
-        settings: settings,
-        contacts: contacts,
-        background: background,
+      home: ConsentGate(
+        consent: consent,
+        onAccepted: onConsent,
+        child: HomeScreen(
+          connection: connection,
+          settings: settings,
+          contacts: contacts,
+          background: background,
+        ),
       ),
     );
   }

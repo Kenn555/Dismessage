@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:dismessage/config.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -59,5 +61,14 @@ void main() {
       choose(isWeb: true, page: 'http://localhost:8080/'),
       'ws://localhost:8080/ws',
     );
+  });
+
+  test('the version shown matches pubspec.yaml (and the installer)', () {
+    final pubspec = File('pubspec.yaml').readAsStringSync();
+    final version = RegExp(
+      r'^version: ([0-9.]+)\+',
+      multiLine: true,
+    ).firstMatch(pubspec)!;
+    expect(kAppVersion, version.group(1));
   });
 }

@@ -17,7 +17,8 @@ Future<void> main(List<String> args) async {
   final uri = Uri.parse(args.isEmpty ? 'ws://localhost:8099/ws' : args.first);
   final channel = WebSocketChannel.connect(uri);
   await channel.ready;
-  final id = DismessageId.generate();
+  // The relay picks the ID (id_request), then the peer registers it.
+  var id = '';
   final log = <String>[];
   String? sid;
   String? asked;
@@ -28,6 +29,10 @@ Future<void> main(List<String> args) async {
     final frame = Frame.decode(raw);
     log.add(frame.encode());
     switch (frame) {
+      case IdAssignedFrame(id: final assigned, :final secret):
+        id = assigned;
+        send(RegisterFrame(id: assigned, secret: secret));
+        stdout.writeln('peer $assigned on $uri');
       case IncomingRequestFrame(:final from):
         send(ConnectAcceptFrame(from: from));
       case SessionStartedFrame(sid: final started):
@@ -37,8 +42,7 @@ Future<void> main(List<String> args) async {
         break;
     }
   });
-  send(RegisterFrame(id: id, secret: DismessageId.generateSecret()));
-  stdout.writeln('peer $id on $uri');
+  send(const IdRequestFrame());
 
   final server = await HttpServer.bind('127.0.0.1', 9555);
   await for (final req in server) {

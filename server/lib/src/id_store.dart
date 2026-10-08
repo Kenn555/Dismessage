@@ -36,6 +36,20 @@ class IdStore {
     return true;
   }
 
+  /// Records [id] with [secret], replacing an older secret (an ID upgraded
+  /// to a signed one). Written only when it changes.
+  Future<void> put(String id, String secret) async {
+    final hash = _hash(secret);
+    if (_hashes[id] == hash) return;
+    _hashes[id] = hash;
+    await _save();
+  }
+
+  /// Forgets [id] whatever its secret (the caller checked ownership).
+  Future<void> remove(String id) async {
+    if (_hashes.remove(id) != null) await _save();
+  }
+
   /// Frees [id] if [secret] proves ownership.
   Future<bool> release(String id, String secret) async {
     if (_hashes[id] != _hash(secret)) return false;

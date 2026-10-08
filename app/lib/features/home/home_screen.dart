@@ -10,12 +10,14 @@ import '../../services/chat_session.dart';
 import '../../services/connection_service.dart';
 import '../../services/contacts_service.dart';
 import '../../services/id_privacy.dart';
+import '../../services/link_opener.dart' show OpenLink;
 import '../../theme/app_theme.dart';
 import '../../widgets/contact_dialog.dart';
 import '../../widgets/dismessage_logo.dart';
 import '../../widgets/presence_avatar.dart';
 import '../../widgets/session_tile.dart';
 import '../chat/chats_shell.dart';
+import 'about_dialog.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({
@@ -26,6 +28,7 @@ class HomeScreen extends StatefulWidget {
     this.privacy,
     this.background,
     this.buildChat,
+    this.openLink,
   });
 
   final ConnectionService connection;
@@ -40,6 +43,9 @@ class HomeScreen extends StatefulWidget {
 
   /// Builds a conversation screen (tests inject fake hardware).
   final ChatScreenBuilder? buildChat;
+
+  /// Opens the GitHub link of "À propos" (tests inject a fake).
+  final OpenLink? openLink;
 
   @override
   State<HomeScreen> createState() => _HomeScreenState();
@@ -139,6 +145,11 @@ class _HomeScreenState extends State<HomeScreen> {
         // Answered from the notification: the dialog has nothing left to do.
         final dialog = _incomingDialogs.remove(from);
         if (dialog != null && dialog.mounted) Navigator.of(dialog).pop();
+      case EncryptionFailedEvent(:final peer):
+        _snack(
+          'Chiffrement impossible avec ${_label(peer)} : '
+          'conversation fermée, rien n’a été envoyé.',
+        );
       case ServerErrorEvent(:final message):
         _snack(message);
     }
@@ -149,7 +160,7 @@ class _HomeScreenState extends State<HomeScreen> {
   ).showSnackBar(SnackBar(content: Text(message)));
 
   Future<void> _showIncomingRequest(String from) async {
-    final accepted = await showDialog<bool>(
+    final answer = await showDialog<_RequestAnswer>(
       context: context,
       barrierDismissible: false,
       builder: (context) {
@@ -164,11 +175,19 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
           actions: [
             TextButton(
-              onPressed: () => Navigator.pop(context, false),
+              key: const Key('request-block'),
+              style: TextButton.styleFrom(
+                foregroundColor: Theme.of(context).colorScheme.error,
+              ),
+              onPressed: () => Navigator.pop(context, _RequestAnswer.block),
+              child: const Text('Bloquer'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.pop(context, _RequestAnswer.reject),
               child: const Text('Refuser'),
             ),
             FilledButton(
-              onPressed: () => Navigator.pop(context, true),
+              onPressed: () => Navigator.pop(context, _RequestAnswer.accept),
               child: const Text('Accepter'),
             ),
           ],
@@ -177,8 +196,17 @@ class _HomeScreenState extends State<HomeScreen> {
     );
     _incomingDialogs.remove(from);
     // null: the requester withdrew, nothing to answer.
-    if (accepted == true) _connection.accept(from);
-    if (accepted == false) _connection.reject(from);
+    switch (answer) {
+      case _RequestAnswer.accept:
+        _connection.accept(from);
+      case _RequestAnswer.reject:
+        _connection.reject(from);
+      case _RequestAnswer.block:
+        _connection.reject(from);
+        await _block(from);
+      case null:
+        break;
+    }
   }
 
   void _connect() {
@@ -251,36 +279,103 @@ class _HomeScreenState extends State<HomeScreen> {
     if (confirmed ?? false) await _connection.regenerateId();
   }
 
+  /// Background mode (Android), who can ask for a conversation, blocked IDs.
   Future<void> _showSettings() async {
-    final background = widget.background!;
+    final background = widget.background;
     await showModalBottomSheet<void>(
       context: context,
       showDragHandle: true,
+      isScrollControlled: true,
       builder: (context) => SafeArea(
         child: ListenableBuilder(
-          listenable: background,
-          builder: (context, _) => Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              SwitchListTile(
-                key: const Key('background-switch'),
-                secondary: const Icon(Icons.notifications_active_outlined),
-                title: const Text('Rester joignable en arrière-plan'),
-                subtitle: const Text(
-                  'Démarre avec le téléphone et garde Dismessage connecté, '
-                  'même fermé, pour être prévenu des messages et des '
-                  'demandes. Une notification discrète l’indique.',
+          listenable: Listenable.merge([?background, _contacts]),
+          builder: (context, _) => SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                if (background != null && background.supported)
+                  SwitchListTile(
+                    key: const Key('background-switch'),
+                    secondary: const Icon(Icons.notifications_active_outlined),
+                    title: const Text('Rester joignable en arrière-plan'),
+                    subtitle: const Text(
+                      'Démarre avec le téléphone et garde Dismessage connecté, '
+                      'même fermé, pour être prévenu des messages et des '
+                      'demandes. Une notification discrète l’indique.',
+                    ),
+                    value: background.enabled,
+                    onChanged: background.setEnabled,
+                  ),
+                SwitchListTile(
+                  key: const Key('contacts-only-switch'),
+                  secondary: const Icon(Icons.shield_outlined),
+                  title: const Text('Seuls mes contacts peuvent me joindre'),
+                  subtitle: const Text(
+                    'Les demandes des autres sont ignorées, sans notification. '
+                    'Ils ne savent pas que vous les avez écartés.',
+                  ),
+                  value: _contacts.contactsOnly,
+                  onChanged: _contacts.setContactsOnly,
                 ),
-                value: background.enabled,
-                onChanged: background.setEnabled,
-              ),
-              const SizedBox(height: 8),
-            ],
+                const Divider(),
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
+                  child: Text(
+                    'IDs bloqués',
+                    style: Theme.of(context).textTheme.titleSmall,
+                  ),
+                ),
+                if (_contacts.blocked.isEmpty)
+                  const ListTile(
+                    key: Key('no-blocked'),
+                    leading: Icon(Icons.block_rounded),
+                    title: Text('Aucun ID bloqué'),
+                    subtitle: Text(
+                      'Bloquez quelqu’un depuis sa demande, un contact ou '
+                      'une conversation : ses demandes seront ignorées.',
+                    ),
+                  ),
+                for (final id in _contacts.blocked)
+                  ListTile(
+                    leading: const Icon(Icons.block_rounded),
+                    title: Text(_label(id)),
+                    subtitle: _contacts.byId(id) == null
+                        ? null
+                        : Text(_privacy.contact(id)),
+                    trailing: TextButton(
+                      key: ValueKey('unblock-$id'),
+                      onPressed: () => _contacts.unblock(id),
+                      child: const Text('Débloquer'),
+                    ),
+                  ),
+                const SizedBox(height: 8),
+              ],
+            ),
           ),
         ),
       ),
     );
   }
+
+  /// Blocks [id]: its requests are ignored from now on (undo offered).
+  Future<void> _block(String id) async {
+    await _contacts.block(id);
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('${_label(id)} est bloqué.'),
+        action: SnackBarAction(
+          label: 'Annuler',
+          onPressed: () => _contacts.unblock(id),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _toggleBlock(Contact contact) => _contacts.isBlocked(contact.id)
+      ? _contacts.unblock(contact.id)
+      : _block(contact.id);
 
   Future<void> _editServer() async {
     final uri = await showDialog<Uri>(
@@ -297,6 +392,63 @@ class _HomeScreenState extends State<HomeScreen> {
     _snack('ID copié');
   }
 
+  /// Settings (Android), server and about: icons, or a "⋮" menu on a small
+  /// phone, where three icons do not fit beside the title.
+  List<Widget> _headerButtons(BuildContext context) {
+    final buttons = [
+      (
+        key: const Key('settings'),
+        label: 'Réglages',
+        icon: Icons.settings_outlined,
+        action: _showSettings,
+      ),
+      (
+        key: const Key('server-settings'),
+        label: 'Serveur',
+        icon: Icons.tune_rounded,
+        action: _editServer,
+      ),
+      (
+        key: const Key('about'),
+        label: 'À propos',
+        icon: Icons.info_outline_rounded,
+        action: () =>
+            AboutDismessageDialog.show(context, openLink: widget.openLink),
+      ),
+    ];
+    if (MediaQuery.sizeOf(context).width >= kCompactHeaderWidth) {
+      return [
+        for (final b in buttons)
+          IconButton(
+            key: b.key,
+            tooltip: b.label,
+            icon: Icon(b.icon),
+            onPressed: b.action,
+          ),
+      ];
+    }
+    return [
+      PopupMenuButton<VoidCallback>(
+        key: const Key('header-menu'),
+        tooltip: 'Plus',
+        icon: const Icon(Icons.more_vert_rounded),
+        onSelected: (action) => action(),
+        itemBuilder: (_) => [
+          for (final b in buttons)
+            PopupMenuItem(
+              key: b.key,
+              value: b.action,
+              child: ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: Icon(b.icon),
+                title: Text(b.label),
+              ),
+            ),
+        ],
+      ),
+    ];
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -307,12 +459,17 @@ class _HomeScreenState extends State<HomeScreen> {
           children: [
             DismessageLogo(size: 30),
             SizedBox(width: 12),
-            Text(
-              'Dismessage',
-              style: TextStyle(
-                fontSize: 21,
-                fontWeight: FontWeight.w800,
-                letterSpacing: -0.4,
+            // Shortened rather than overflowing on a very small screen.
+            Flexible(
+              child: Text(
+                'Dismessage',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  fontSize: 21,
+                  fontWeight: FontWeight.w800,
+                  letterSpacing: -0.4,
+                ),
               ),
             ),
           ],
@@ -323,19 +480,7 @@ class _HomeScreenState extends State<HomeScreen> {
             builder: (context, _) => _StatusChip(status: _connection.status),
           ),
           const SizedBox(width: 4),
-          if (widget.background?.supported ?? false)
-            IconButton(
-              key: const Key('settings'),
-              tooltip: 'Réglages',
-              icon: const Icon(Icons.settings_outlined),
-              onPressed: _showSettings,
-            ),
-          IconButton(
-            key: const Key('server-settings'),
-            tooltip: 'Serveur',
-            icon: const Icon(Icons.tune_rounded),
-            onPressed: _editServer,
-          ),
+          ..._headerButtons(context),
           const SizedBox(width: 8),
         ],
       ),
@@ -432,7 +577,10 @@ class _HomeScreenState extends State<HomeScreen> {
         id: _connection.myId,
         privacy: _privacy,
         onCopy: _copyId,
-        onRegenerate: _regenerate,
+        // The relay gives the new ID: only while connected.
+        onRegenerate: _connection.status == ServerStatus.online
+            ? _regenerate
+            : null,
       ),
     ),
     const SizedBox(height: 32),
@@ -552,6 +700,8 @@ class _HomeScreenState extends State<HomeScreen> {
         onConnect: (c) => _reach(c.id),
         onRename: _renameContact,
         onRemove: _removeContact,
+        isBlocked: _contacts.isBlocked,
+        onToggleBlock: _toggleBlock,
       ),
     ),
   ];
@@ -625,7 +775,7 @@ class _IdCard extends StatelessWidget {
   final String? id;
   final IdPrivacy privacy;
   final void Function(String formatted) onCopy;
-  final VoidCallback onRegenerate;
+  final VoidCallback? onRegenerate;
 
   @override
   Widget build(BuildContext context) {
@@ -692,7 +842,11 @@ class _IdCard extends StatelessWidget {
             ),
             const SizedBox(height: 4),
             Text(
-              'Partagez-le pour que l’on puisse vous joindre.',
+              id == null
+                  // First launch: the relay gives the ID.
+                  ? 'Votre ID vous sera attribué dès la connexion au serveur.'
+                  : 'Partagez-le pour que l’on puisse vous joindre.',
+              key: const Key('my-id-hint'),
               style: text.bodyMedium?.copyWith(color: muted),
             ),
             const SizedBox(height: 18),
@@ -764,9 +918,13 @@ class _ContactList extends StatelessWidget {
     required this.onConnect,
     required this.onRename,
     required this.onRemove,
+    required this.isBlocked,
+    required this.onToggleBlock,
   });
 
   final List<Contact> contacts;
+  final bool Function(String id) isBlocked;
+  final void Function(Contact) onToggleBlock;
 
   /// A contact's ID as displayed (masked unless revealed).
   final String Function(String id) displayId;
@@ -847,11 +1005,23 @@ class _ContactList extends StatelessWidget {
                 key: ValueKey('contact-menu-${contact.id}'),
                 tooltip: 'Options',
                 icon: const Icon(Icons.more_vert_rounded),
-                onSelected: (action) =>
-                    action == 'rename' ? onRename(contact) : onRemove(contact),
-                itemBuilder: (_) => const [
-                  PopupMenuItem(value: 'rename', child: Text('Renommer')),
-                  PopupMenuItem(value: 'remove', child: Text('Supprimer')),
+                onSelected: (action) => switch (action) {
+                  'rename' => onRename(contact),
+                  'block' => onToggleBlock(contact),
+                  _ => onRemove(contact),
+                },
+                itemBuilder: (_) => [
+                  const PopupMenuItem(value: 'rename', child: Text('Renommer')),
+                  PopupMenuItem(
+                    value: 'block',
+                    child: Text(
+                      isBlocked(contact.id) ? 'Débloquer' : 'Bloquer',
+                    ),
+                  ),
+                  const PopupMenuItem(
+                    value: 'remove',
+                    child: Text('Supprimer'),
+                  ),
                 ],
               ),
             ),
@@ -861,6 +1031,8 @@ class _ContactList extends StatelessWidget {
     );
   }
 }
+
+enum _RequestAnswer { accept, reject, block }
 
 class _StatusChip extends StatelessWidget {
   const _StatusChip({required this.status});

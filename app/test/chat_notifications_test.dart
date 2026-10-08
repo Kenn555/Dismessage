@@ -73,7 +73,7 @@ void main() {
     );
     await connection.start();
     channel.receive(const RegisteredFrame(id: me));
-    channel.receive(const SessionStartedFrame(sid: 's1', peer: peer));
+    await channel.startSession('s1', peer);
     await pumpEventQueue();
     session = connection.sessions.single;
   });
@@ -84,7 +84,7 @@ void main() {
   });
 
   Future<void> receive(RelayedFrame frame) async {
-    channel.receive(frame);
+    await channel.receiveSecure(frame);
     await pumpEventQueue();
   }
 
@@ -211,22 +211,25 @@ void main() {
     // A draft is in progress in the chat input.
     session.updateDraft('Je vé');
     await Future<void>.delayed(const Duration(milliseconds: kDraftBatchMs * 2));
-    channel.sink.sent.clear();
+    final before = (await channel.openedSent('s1')).length;
 
     notifier.callbacks!.onReply('s1', 'Oui, j’arrive');
-    final commit = channel.sink.sent.whereType<MessageCommitFrame>().single;
+    await pumpEventQueue();
+    final sent = (await channel.openedSent('s1')).skip(before);
+    final commit = sent.whereType<MessageCommitFrame>().single;
     expect(commit.text, 'Oui, j’arrive');
     expect(session.messages.last, isA<ChatMessage>());
     expect((session.messages.last as ChatMessage).fromMe, isTrue);
     expect(notifier.cancelled, ['s1']);
     // The draft in progress is streamed again to the peer.
-    final after = channel.sink.sent.skipWhile((f) => f is! MessageCommitFrame);
+    final after = sent.skipWhile((f) => f is! MessageCommitFrame);
     expect(after.whereType<DraftOpsFrame>(), isNotEmpty);
   });
 
   test('a reply for an ended conversation only closes it', () async {
     notifier.callbacks!.onReply('old-session', 'Trop tard');
-    expect(channel.sink.sent.whereType<MessageCommitFrame>(), isEmpty);
+    await pumpEventQueue();
+    expect(channel.sink.sent.whereType<SealedFrame>(), isEmpty);
     expect(notifier.cancelled, ['old-session']);
   });
 
@@ -315,7 +318,7 @@ void main() {
     const bob = '555666777';
 
     setUp(() async {
-      channel.receive(const SessionStartedFrame(sid: 's2', peer: bob));
+      await channel.startSession('s2', bob);
       await pumpEventQueue();
     });
 
@@ -339,7 +342,10 @@ void main() {
       notifications.appVisible = false;
       await message('Coucou');
       notifier.callbacks!.onReply('s1', 'Oui');
-      final commit = channel.sink.sent.whereType<MessageCommitFrame>().single;
+      await pumpEventQueue();
+      final commit = (await channel.openedSent(
+        's1',
+      )).whereType<MessageCommitFrame>().single;
       expect(commit.sid, 's1');
       expect(commit.text, 'Oui');
       expect(connection.sessions.last.messages, isEmpty);

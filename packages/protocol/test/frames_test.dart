@@ -10,6 +10,13 @@ void main() {
     const RegisteredFrame(id: a),
     const IdTakenFrame(id: a),
     const ReleaseFrame(id: a, secret: 's3cr3t'),
+    const IdRequestFrame(),
+    const KeyOfferFrame(
+      sid: 'sid1',
+      key: 'AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8',
+    ),
+    const SealedFrame(sid: 'sid1', n: 3, data: 'q83vASNFZ4mrze8BI0VniQ=='),
+    const IdAssignedFrame(id: a, secret: 's3cr3t'),
     const ConnectRequestFrame(to: b),
     const IncomingRequestFrame(from: a),
     const ConnectAcceptFrame(from: a),
@@ -93,6 +100,14 @@ void main() {
   }
 
   group('optional fields', () {
+    test('register from an older version is protocol version 1', () {
+      const raw = '{"t":"register","id":"$a","secret":"s"}';
+      expect((Frame.decode(raw) as RegisterFrame).v, 1);
+      expect(const RegisterFrame(id: a, secret: 's').v, kProtocolVersion);
+      const later = RegisterFrame(id: a, secret: 's', v: 7);
+      expect((Frame.decode(later.encode()) as RegisterFrame).v, 7);
+    });
+
     test('a message without reply omits the field', () {
       const frame = MessageCommitFrame(
         sid: 's',
@@ -145,6 +160,12 @@ void main() {
       'unknown type': '{"t":"hack"}',
       'bad id': '{"t":"register","id":"012345678","secret":"x"}',
       'empty secret': '{"t":"register","id":"$a","secret":""}',
+      'bad key offer': '{"t":"key_offer","sid":"s","key":"short"}',
+      'sealed without counter': '{"t":"sealed","sid":"s","data":"AAAA"}',
+      'sealed, bad counter': '{"t":"sealed","sid":"s","n":0,"data":"AAAA"}',
+      'sealed, not base64': '{"t":"sealed","sid":"s","n":1,"data":"*"}',
+      'bad version': '{"t":"register","id":"$a","secret":"s","v":0}',
+      'version not a number': '{"t":"register","id":"$a","secret":"s","v":"2"}',
       'secret too long': '{"t":"register","id":"$a","secret":"$longSecret"}',
       'seq zero': '{"t":"draft_clear","sid":"s","seq":0}',
       'seq string': '{"t":"draft_clear","sid":"s","seq":"1"}',

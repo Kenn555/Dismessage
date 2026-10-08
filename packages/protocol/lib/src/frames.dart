@@ -43,10 +43,16 @@ sealed class Frame {
     final r = _Reader(json);
     try {
       return switch (r.str('t')) {
-        'register' => RegisterFrame(id: r.id('id'), secret: r.secret()),
+        'register' => RegisterFrame(
+          id: r.id('id'),
+          secret: r.secret(),
+          v: r.version(),
+        ),
         'registered' => RegisteredFrame(id: r.id('id')),
         'id_taken' => IdTakenFrame(id: r.id('id')),
         'release' => ReleaseFrame(id: r.id('id'), secret: r.secret()),
+        'id_request' => const IdRequestFrame(),
+        'id_assigned' => IdAssignedFrame(id: r.id('id'), secret: r.secret()),
         'connect_request' => ConnectRequestFrame(to: r.id('to')),
         'incoming_request' => IncomingRequestFrame(from: r.id('from')),
         'connect_accept' => ConnectAcceptFrame(from: r.id('from')),
@@ -130,6 +136,12 @@ sealed class Frame {
           fid: r.entryId('fid'),
           count: r.chunkIndex('n', last: FileChunks.count(kMaxFileBytes)),
         ),
+        'key_offer' => KeyOfferFrame(sid: r.str('sid'), key: r.publicKey()),
+        'sealed' => SealedFrame(
+          sid: r.str('sid'),
+          n: r.positive('n'),
+          data: r.base64('data', kMaxSealedDataLength),
+        ),
         'reaction' => ReactionFrame(
           sid: r.str('sid'),
           ref: r.entryId('ref'),
@@ -160,13 +172,20 @@ sealed class SessionFrame extends Frame {
 }
 
 class RegisterFrame extends Frame {
-  const RegisterFrame({required this.id, required this.secret});
+  const RegisterFrame({
+    required this.id,
+    required this.secret,
+    this.v = kProtocolVersion,
+  });
   final String id;
   final String secret;
+
+  /// Protocol version of the client (absent before version 2: 1).
+  final int v;
   @override
   String get type => 'register';
   @override
-  Map<String, Object?> fieldsToJson() => {'id': id, 'secret': secret};
+  Map<String, Object?> fieldsToJson() => {'id': id, 'secret': secret, 'v': v};
 }
 
 class RegisteredFrame extends Frame {
@@ -193,6 +212,28 @@ class ReleaseFrame extends Frame {
   final String secret;
   @override
   String get type => 'release';
+  @override
+  Map<String, Object?> fieldsToJson() => {'id': id, 'secret': secret};
+}
+
+/// Asks the relay for a new ID: the relay picks it, so nobody can choose
+/// someone else's.
+class IdRequestFrame extends Frame {
+  const IdRequestFrame();
+  @override
+  String get type => 'id_request';
+  @override
+  Map<String, Object?> fieldsToJson() => const {};
+}
+
+/// A new ID and its secret, signed by the relay: the secret alone proves
+/// ownership, even after the relay forgot everything (restart).
+class IdAssignedFrame extends Frame {
+  const IdAssignedFrame({required this.id, required this.secret});
+  final String id;
+  final String secret;
+  @override
+  String get type => 'id_assigned';
   @override
   Map<String, Object?> fieldsToJson() => {'id': id, 'secret': secret};
 }
@@ -285,6 +326,34 @@ class SessionLeaveFrame extends SessionFrame {
 /// Frames relayed verbatim between the two peers of a session.
 sealed class RelayedFrame extends SessionFrame {
   const RelayedFrame({required super.sid});
+}
+
+/// A public key for the conversation's end-to-end encryption (E2eSession).
+class KeyOfferFrame extends RelayedFrame {
+  const KeyOfferFrame({required super.sid, required this.key});
+
+  /// X25519 public key, base64url (32 bytes).
+  final String key;
+  @override
+  String get type => 'key_offer';
+  @override
+  Map<String, Object?> fieldsToJson() => {'sid': sid, 'key': key};
+}
+
+/// Any other conversation frame, encrypted (E2eSession): the relay can
+/// only pass it on.
+class SealedFrame extends RelayedFrame {
+  const SealedFrame({required super.sid, required this.n, required this.data});
+
+  /// Counter of the sender, from 1: the nonce, and protection from replay.
+  final int n;
+
+  /// Ciphertext then the 16-byte tag, base64.
+  final String data;
+  @override
+  String get type => 'sealed';
+  @override
+  Map<String, Object?> fieldsToJson() => {'sid': sid, 'n': n, 'data': data};
 }
 
 class DraftOpsFrame extends RelayedFrame {
@@ -578,6 +647,22 @@ class PresenceFrame extends Frame {
   Map<String, Object?> fieldsToJson() => {'id': id, 'online': online};
 }
 
+/// `error` codes a client reacts to (the others are only shown).
+abstract final class ErrorCodes {
+  /// Too many requests, registrations or presence lists: try again later.
+  static const rateLimited = 'rate_limited';
+
+  /// Too many connections from this IP: the relay closes this one.
+  static const tooManyConnections = 'too_many_connections';
+
+  /// `register` with a secret the relay did not sign, for an ID it does not
+  /// know (an older client's own ID): ask for one with `id_request`.
+  static const unsignedId = 'unsigned_id';
+
+  /// The client's protocol version is no longer accepted: update the app.
+  static const updateRequired = 'update_required';
+}
+
 class ErrorFrame extends Frame {
   const ErrorFrame({required this.code, required this.message});
   final String code;
@@ -628,6 +713,32 @@ class _Reader {
     final value = str('secret');
     if (value.length > kMaxSecretLength) {
       throw const FrameFormatException('"secret" too long');
+    }
+    return value;
+  }
+
+  /// `v` of `register`: 1 when absent (clients older than version 2).
+  int version() {
+    final value = json['v'] ?? 1;
+    if (value is! int || value < 1 || value > 1000) {
+      throw const FrameFormatException('"v" must be a protocol version');
+    }
+    return value;
+  }
+
+  /// A strictly positive integer.
+  int positive(String key) {
+    final value = json[key];
+    if (value is! int || value < 1) {
+      throw FrameFormatException('"$key" must be a positive integer');
+    }
+    return value;
+  }
+
+  String publicKey() {
+    final value = str('key');
+    if (value.length != 43 && value.length != 44 || !_base64.hasMatch(value)) {
+      throw const FrameFormatException('"key" must be a public key');
     }
     return value;
   }

@@ -84,10 +84,16 @@ void main() {
     await cleanUp(tester);
   });
 
-  testWidgets('no settings outside Android (web, Windows)', (tester) async {
+  testWidgets('no background option outside Android (web, Windows)', (
+    tester,
+  ) async {
     final background = BackgroundMode(store, supported: false);
     await pumpHome(tester, background);
-    expect(find.byKey(const Key('settings')), findsNothing);
+    // The settings stay, for who can reach you.
+    await tester.tap(find.byKey(const Key('settings')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('background-switch')), findsNothing);
+    expect(find.byKey(const Key('contacts-only-switch')), findsOneWidget);
     await background.setEnabled(true);
     expect(background.enabled, isFalse);
     expect(calls, isEmpty);

@@ -4,15 +4,22 @@ import 'dart:math';
 import 'package:dismessage_protocol/dismessage_protocol.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
+import 'id_signer.dart';
 import 'id_store.dart';
+import 'rate_limit.dart';
 
 /// Maximum accepted size of a raw WebSocket message (fits one image).
 const int kMaxRawFrameLength = kMaxFrameLength;
 
 class _Client {
-  _Client(this.channel);
+  _Client(this.channel, this.ip, this.limiter);
   final WebSocketChannel channel;
+  final IpLimiter ip;
+  final ConnectionLimiter limiter;
   String? id;
+
+  /// Limits already logged for this connection (one line each, not a flood).
+  final Set<String> loggedLimits = {};
 
   /// IDs whose presence this client follows.
   Set<String> watching = {};
@@ -32,13 +39,40 @@ class _Session {
 
 /// Routes frames between clients: registration, pairing and session relay.
 class Relay {
-  Relay(this._ids, {Random? random, void Function(String line)? log})
-    : _random = random ?? Random.secure(),
-      _log = log ?? _silent;
+  Relay(
+    this._ids, {
+    Random? random,
+    void Function(String line)? log,
+    RateLimits limits = const RateLimits(),
+    DateTime Function()? clock,
+    IdSigner? signer,
+    this.acceptLegacyIds = false,
+    this.minProtocolVersion = kMinProtocolVersion,
+  }) : _random = random ?? Random.secure(),
+       _log = log ?? _silent,
+       _limits = limits,
+       _clock = clock ?? DateTime.now,
+       signer = signer ?? IdSigner.random() {
+    _ips = IpLimiters(_limits, _clock);
+  }
 
   static void _silent(String _) {}
 
   final IdStore _ids;
+
+  /// Signs the IDs this relay hands out (`id_request`).
+  final IdSigner signer;
+
+  /// Transition from older clients, which chose their own ID and secret:
+  /// an unknown ID is then claimed by whoever comes first (anyone can take
+  /// an offline ID after a restart). Off: only signed or known IDs.
+  final bool acceptLegacyIds;
+
+  /// Older clients are refused with `update_required`, which they show.
+  final int minProtocolVersion;
+  final RateLimits _limits;
+  final DateTime Function() _clock;
+  late final IpLimiters _ips;
   final void Function(String line) _log;
   final Random _random;
   final Map<String, _Client> _online = {};
@@ -56,18 +90,45 @@ class Relay {
   /// Serves one WebSocket connection until it closes.
   ///
   /// [origin] (e.g. the forwarded client IP) only appears in the log.
+  /// [origin] (the client IP) also groups connections for the per-IP limits.
   void handle(WebSocketChannel channel, {String? origin}) {
-    final client = _Client(channel);
     final from = origin ?? '?';
+    final ip = _ips[from];
+    if (ip.connections >= _limits.connectionsPerIp) {
+      _log('! connexion refusée ($from) : trop de connexions');
+      channel.sink.add(
+        const ErrorFrame(
+          code: ErrorCodes.tooManyConnections,
+          message: 'Trop de connexions depuis cette adresse.',
+        ).encode(),
+      );
+      channel.sink.close();
+      return;
+    }
+    ip.connections++;
+    final client = _Client(channel, ip, ConnectionLimiter(_limits, _clock));
     _log('+ connexion ($from)');
     // Frames of one client are processed in order, even across awaits.
     var queue = Future<void>.value();
-    channel.stream.listen(
-      (raw) => queue = queue.then((_) => _onRaw(client, raw)),
+    late final StreamSubscription<Object?> subscription;
+    subscription = channel.stream.listen(
+      (raw) {
+        // Over its throughput, a client is not read for a while: the socket
+        // pushes back and the sender slows down, without losing a frame.
+        final length = switch (raw) {
+          String() => raw.length,
+          List<int>() => raw.length,
+          _ => 0,
+        };
+        final wait = client.limiter.throttle(length);
+        if (wait > Duration.zero) subscription.pause(Future.delayed(wait));
+        queue = queue.then((_) => _onRaw(client, raw));
+      },
       onDone: () => queue = queue.then((_) {
         _log(
           '- déconnexion ${client.id == null ? '($from)' : _fmt(client.id!)}',
         );
+        ip.connections--;
         _unregister(client);
         _watch(client, const []);
       }),
@@ -97,12 +158,19 @@ class Relay {
     switch (frame) {
       case PingFrame():
         client.send(const PongFrame());
+      case RegisterFrame(:final v) when v < minProtocolVersion:
+        _error(
+          client,
+          ErrorCodes.updateRequired,
+          "Cette version de Dismessage n'est plus acceptée : "
+          'installez la nouvelle.',
+        );
       case RegisterFrame(:final id, :final secret):
         await _register(client, id, secret);
+      case IdRequestFrame():
+        await _assignId(client);
       case ReleaseFrame(:final id, :final secret):
-        if (await _ids.release(id, secret) && client.id == id) {
-          _unregister(client);
-        }
+        await _release(client, id, secret);
       case ConnectRequestFrame(:final to):
         _connectRequest(client, to);
       case ConnectAcceptFrame(:final from):
@@ -112,21 +180,62 @@ class Relay {
       case ConnectCancelFrame(:final peer):
         _connectCancel(client, peer);
       case PresenceWatchFrame(:final ids):
-        if (_requireId(client) != null) _watch(client, ids);
+        if (_requireId(client) == null) return;
+        if (!client.limiter.watches.tryTake()) {
+          return _rateLimited(client, 'présence');
+        }
+        _watch(client, ids);
       case SessionLeaveFrame(:final sid):
         _leave(client, sid);
+      case KeyOfferFrame() || SealedFrame():
+        _relay(client, frame as RelayedFrame);
       case RelayedFrame():
-        _relay(client, frame);
+        // Conversations are end-to-end encrypted: nothing else passes.
+        _error(client, 'unencrypted', 'Trame non chiffrée refusée');
       default:
         _error(client, 'unexpected_frame', 'Trame "${frame.type}" refusée');
     }
   }
 
+  /// Ownership, in order: a secret signed by this relay (survives a lost
+  /// store); the secret recorded for a known ID (older clients, upgraded to
+  /// a signed secret on the way); an unknown ID claimed first-come, only
+  /// with [acceptLegacyIds].
   Future<void> _register(_Client client, String id, String secret) async {
-    if (!await _ids.claim(id, secret)) {
-      _log("! ID ${_fmt(id)} refusé (appartient à quelqu'un d'autre)");
-      client.send(IdTakenFrame(id: id));
-      return;
+    if (!client.ip.registers.tryTake()) {
+      return _rateLimited(client, 'enregistrements');
+    }
+    var upgrade = false;
+    if (signer.verify(id, secret)) {
+      // Known again after a restart: kept out of the IDs handed out.
+      await _ids.put(id, secret);
+    } else if (_ids.contains(id)) {
+      if (!await _ids.claim(id, secret)) {
+        _log("! ID ${_fmt(id)} refusé (appartient à quelqu'un d'autre)");
+        client.send(IdTakenFrame(id: id));
+        return;
+      }
+      upgrade = true;
+    } else if (acceptLegacyIds) {
+      // Every new ID grows the store: one IP cannot claim thousands of them.
+      if (!client.ip.newIds.tryTake()) {
+        return _rateLimited(client, 'nouveaux IDs');
+      }
+      await _ids.claim(id, secret);
+      upgrade = true;
+    } else {
+      return _error(
+        client,
+        ErrorCodes.unsignedId,
+        'Cette version de Dismessage est trop ancienne : '
+        'installez la nouvelle pour obtenir un ID.',
+      );
+    }
+    if (upgrade) {
+      // The same ID, with a secret that outlives the store. The store keeps
+      // the old one: an older client ignores this frame and comes back with
+      // it.
+      client.send(IdAssignedFrame(id: id, secret: signer.sign(id)));
     }
     if (client.id != null && client.id != id) _unregister(client);
     final previous = _online[id];
@@ -143,6 +252,39 @@ class Relay {
     _log('  ID ${_fmt(id)} en ligne (${_online.length} en ligne)');
   }
 
+  /// Frees [id] (a new one replaced it). A signed secret stays valid, but
+  /// only its owner held it, and the new ID's register has replaced it.
+  Future<void> _release(_Client client, String id, String secret) async {
+    final bool owned;
+    if (signer.verify(id, secret)) {
+      await _ids.remove(id);
+      owned = true;
+    } else {
+      owned = await _ids.release(id, secret);
+    }
+    if (owned && client.id == id) _unregister(client);
+  }
+
+  /// Picks a free ID and sends it with its signed secret. Free = neither
+  /// online nor in the store; an offline owner unknown since a restart
+  /// could still be picked (1 chance in 900 million per owner).
+  Future<void> _assignId(_Client client) async {
+    // Each one grows the store: one IP cannot get thousands of them.
+    if (!client.ip.newIds.tryTake()) {
+      return _rateLimited(client, 'nouveaux IDs');
+    }
+    for (var attempt = 0; attempt < 100; attempt++) {
+      final id = DismessageId.generate(_random);
+      if (_online.containsKey(id) || _ids.contains(id)) continue;
+      final secret = signer.sign(id);
+      await _ids.put(id, secret);
+      client.send(IdAssignedFrame(id: id, secret: secret));
+      _log('  nouvel ID ${_fmt(id)} attribué');
+      return;
+    }
+    _error(client, 'internal', 'Aucun ID libre trouvé');
+  }
+
   void _connectRequest(_Client client, String to) {
     final me = _requireId(client);
     if (me == null) return;
@@ -152,6 +294,10 @@ class Relay {
         'self_connect',
         'Impossible de se connecter à soi-même',
       );
+    }
+    // Counted even for an offline target: probing IDs costs the same.
+    if (!client.limiter.requests.tryTake() || !client.ip.requests.tryTake()) {
+      return _rateLimited(client, 'demandes');
     }
     final target = _online[to];
     if (target == null) {
@@ -262,6 +408,18 @@ class Relay {
     final id = client.id;
     if (id == null) _error(client, 'not_registered', 'Enregistrement requis');
     return id;
+  }
+
+  void _rateLimited(_Client client, String what) {
+    if (client.loggedLimits.add(what)) {
+      final who = client.id == null ? '' : ' ${_fmt(client.id!)}';
+      _log('! limite atteinte ($what)$who');
+    }
+    _error(
+      client,
+      ErrorCodes.rateLimited,
+      'Trop de tentatives, réessayez dans un instant.',
+    );
   }
 
   void _error(_Client client, String code, String message) =>

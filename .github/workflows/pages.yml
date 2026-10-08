@@ -34,7 +34,9 @@ jobs:
           flutter test
       - name: Build
         working-directory: app
-        run: flutter build web --release --base-href "/${{ github.event.repository.name }}/"
+        # CanvasKit served from the page itself, not from Google's CDN: one
+        # third party less for visitors (see the privacy policy).
+        run: flutter build web --release --no-web-resources-cdn --base-href "/${{ github.event.repository.name }}/"
       - uses: actions/upload-pages-artifact@v3
         with:
           path: app/build/web

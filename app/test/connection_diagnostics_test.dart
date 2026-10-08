@@ -119,6 +119,32 @@ void main() {
     await cleanUp(tester);
   });
 
+  for (final code in [
+    ErrorCodes.rateLimited,
+    ErrorCodes.tooManyConnections,
+    ErrorCodes.updateRequired,
+  ]) {
+    testWidgets('a registration refused ($code) shows why and retries', (
+      tester,
+    ) async {
+      var attempts = 0;
+      late ScriptedChannel last;
+      await pumpHome(tester, () {
+        attempts++;
+        return last = ScriptedChannel();
+      });
+      last.receive(ErrorFrame(code: code, message: 'Limite du relais.'));
+      await tester.pump();
+
+      expect(connection.status, ServerStatus.offline);
+      expect(connection.lastError, 'Limite du relais.');
+      expect(find.text('Limite du relais.'), findsOneWidget);
+      await tester.pump(const Duration(seconds: 2));
+      expect(attempts, 2);
+      await cleanUp(tester);
+    });
+  }
+
   testWidgets('getting online clears the banner and the counter', (
     tester,
   ) async {
@@ -133,8 +159,15 @@ void main() {
     });
     await tester.pump(timeout);
     await tester.pump(const Duration(seconds: 2));
-    last.receive(RegisteredFrame(id: connection.myId!));
+    // First launch: the relay gives the ID, then confirms it.
+    expect(connection.myId, isNull);
+    expect(last.sink.sent.last, isA<IdRequestFrame>());
+    last.receive(const IdAssignedFrame(id: '482913075', secret: 'signed'));
     await tester.pump();
+    expect(last.sink.sent.last, isA<RegisterFrame>());
+    last.receive(const RegisteredFrame(id: '482913075'));
+    await tester.pump();
+    expect(connection.myId, '482913075');
 
     expect(connection.status, ServerStatus.online);
     expect(connection.failures, 0);

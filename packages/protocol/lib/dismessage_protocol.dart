@@ -5,6 +5,7 @@ export 'src/constants.dart';
 export 'src/dismessage_id.dart';
 export 'src/draft_sender.dart';
 export 'src/draft_state.dart';
+export 'src/e2e.dart';
 export 'src/entry_id.dart';
 export 'src/file_transfer.dart';
 export 'src/frames.dart';

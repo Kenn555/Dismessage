@@ -539,6 +539,9 @@ class ChatSession extends ChangeNotifier {
         // The peer can only react to my bubbles.
         if (entry == null || !entry.fromMe) return;
         entry.reaction = emoji.isEmpty ? null : emoji;
+      case KeyOfferFrame() || SealedFrame():
+        // Encryption is ConnectionService's: they never get here.
+        return;
     }
     notifyListeners();
   }

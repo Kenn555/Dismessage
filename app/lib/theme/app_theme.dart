@@ -6,6 +6,10 @@ import '../branding/logo_geometry.dart';
 /// screen in two columns, the open conversations in a sidebar.
 const double kWideLayoutWidth = 840;
 
+/// Below this width (small phones), the home header puts its buttons
+/// (settings, server, about) in a "⋮" menu.
+const double kCompactHeaderWidth = 480;
+
 /// Brand colors and the light/dark themes built from them.
 abstract final class AppTheme {
   static const brand = Color(LogoGeometry.gradientStart);

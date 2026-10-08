@@ -74,4 +74,26 @@ void main() {
     await contacts.save(peer, 'Bob');
     expect(store.values.values.join(), isNot(contains('secret du jour')));
   });
+
+  testWidgets('blocking from the conversation asks first', (tester) async {
+    await pumpChat(tester);
+    Future<void> openBlock() async {
+      await tester.tap(find.byKey(const Key('chat-menu')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byKey(const Key('block-peer')));
+      await tester.pumpAndSettle();
+    }
+
+    await openBlock();
+    expect(find.text('Bloquer 318 343 691 ?'), findsOneWidget);
+    await tester.tap(find.text('Annuler'));
+    await tester.pumpAndSettle();
+    expect(contacts.isBlocked(peer), isFalse);
+
+    await openBlock();
+    await tester.tap(find.byKey(const Key('confirm-block')));
+    await tester.pumpAndSettle();
+    expect(contacts.isBlocked(peer), isTrue);
+    expect(contacts.byId(peer), isNull, reason: 'not saved as a contact');
+  });
 }

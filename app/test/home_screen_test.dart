@@ -89,23 +89,24 @@ void main() {
     await cleanUp(tester);
   });
 
-  testWidgets('regenerating asks for confirmation then changes the ID', (
-    tester,
-  ) async {
+  testWidgets('offline, no new ID: the relay gives it', (tester) async {
     await pumpHome(tester);
-    await tester.tap(find.byKey(const Key('regenerate-id')));
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('Annuler'));
-    await tester.pumpAndSettle();
-    expect(find.text('482 *** 075'), findsOneWidget);
+    final button = tester.widget<TextButton>(
+      find.byKey(const Key('regenerate-id')),
+    );
+    expect(button.onPressed, isNull);
+    await cleanUp(tester);
+  });
 
-    await tester.tap(find.byKey(const Key('regenerate-id')));
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('Générer'));
-    await tester.pumpAndSettle();
-    expect(find.text('482 *** 075'), findsNothing);
-    expect(store.values[IdentityService.idKey], isNot('482913075'));
-    expect(connection.myId, store.values[IdentityService.idKey]);
+  testWidgets('first launch offline: no ID yet, and says why', (tester) async {
+    store = MemoryStore();
+    await pumpHome(tester);
+    expect(connection.myId, isNull);
+    expect(find.text('— — —'), findsOneWidget);
+    expect(
+      find.text('Votre ID vous sera attribué dès la connexion au serveur.'),
+      findsOneWidget,
+    );
     await cleanUp(tester);
   });
 

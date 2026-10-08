@@ -1,3 +1,12 @@
+/// Protocol version this code speaks, sent in `register`. Raised when a
+/// change needs clients to update; 2 = IDs given and signed by the relay.
+const int kProtocolVersion = 2;
+
+/// Oldest client protocol version the relay accepts (older: refused with
+/// `update_required`). Raise it to retire old clients. 2: version 1 does
+/// not encrypt conversations.
+const int kMinProtocolVersion = 2;
+
 /// Interval at which pending draft edits are flushed to the network.
 const int kDraftBatchMs = 30;
 
@@ -40,8 +49,18 @@ const int kMaxImagePreviewLength = 8 * 1024;
 /// Maximum base64 length of a full image.
 const int kMaxImageDataLength = (kMaxImageBytes + 2) ~/ 3 * 4;
 
-/// Maximum size of one raw WebSocket message (an image plus JSON overhead).
-const int kMaxFrameLength = kMaxImageDataLength + 4096;
+/// Largest conversation frame before encryption (an image plus JSON).
+const int kMaxInnerFrameLength = kMaxImageDataLength + 4096;
+
+/// Maximum base64 length of a sealed frame (its JSON encrypted, + tag).
+const int kMaxSealedDataLength = (kMaxInnerFrameLength + 16 + 2) ~/ 3 * 4;
+
+/// Maximum size of one raw WebSocket message (a sealed image).
+const int kMaxFrameLength = kMaxSealedDataLength + 1024;
+
+/// The peer's key must arrive within this delay, or the conversation is
+/// closed: nothing is ever sent unencrypted.
+const int kE2eHandshakeSeconds = 15;
 
 /// Maximum number of IDs one client can watch for presence (its contacts).
 const int kMaxPresenceWatch = 500;
@@ -77,6 +96,43 @@ const int kFileWindowChunks = 4;
 
 /// Longest file name (UTF-16 code units).
 const int kMaxFileNameLength = 255;
+
+// Relay rate limits (token buckets: a burst, then a sustained rate). The
+// throughput ones slow a client down; the others refuse with `rate_limited`.
+
+/// Frames one connection can send at once, then per second (live typing
+/// sends one every [kDraftBatchMs]).
+const int kRateFramesBurst = 300;
+const int kRateFramesPerSecond = 100;
+
+/// Characters of raw frames one connection can send at once, then per second.
+const int kRateBytesBurst = 16 * 1024 * 1024;
+const int kRateBytesPerSecond = 8 * 1024 * 1024;
+
+/// Chat requests of one connection: at once, then per minute.
+const int kRateRequestsBurst = 10;
+const int kRateRequestsPerMinute = 10;
+
+/// Chat requests of all connections from one IP: at once, then per minute.
+const int kRateIpRequestsBurst = 30;
+const int kRateIpRequestsPerMinute = 30;
+
+/// ID registrations (reconnections included) from one IP: at once, then per
+/// minute.
+const int kRateIpRegistersBurst = 60;
+const int kRateIpRegistersPerMinute = 60;
+
+/// IDs unknown to the relay claimed from one IP: at once, then per hour.
+const int kRateIpNewIdsBurst = 50;
+const int kRateIpNewIdsPerHour = 30;
+
+/// Presence lists sent by one connection: at once, then per minute.
+const int kRateWatchesBurst = 10;
+const int kRateWatchesPerMinute = 10;
+
+/// Simultaneous connections from one IP (a whole household or office can
+/// share one).
+const int kMaxConnectionsPerIp = 50;
 
 /// Minimum delay between two silent updates of the "is typing" notification.
 const int kTypingNotificationMs = 1500;

@@ -6,11 +6,6 @@ class Identity {
   const Identity({required this.id, required this.secret});
   final String id;
   final String secret;
-
-  factory Identity.generate() => Identity(
-    id: DismessageId.generate(),
-    secret: DismessageId.generateSecret(),
-  );
 }
 
 /// Minimal persistent storage used by [IdentityService].
@@ -41,30 +36,42 @@ class MemoryStore implements KeyValueStore {
   Future<void> setString(String key, String value) async => values[key] = value;
 }
 
-/// Persists the local identity: it only changes on explicit regeneration.
+/// Persists the identity given by each relay: it only changes on explicit
+/// regeneration.
+///
+/// The relay picks the ID and signs its secret with its own key, so an
+/// identity only works on the relay that gave it: one per relay (host and
+/// port), kept when switching servers and back.
 class IdentityService {
   IdentityService(this._store);
 
+  /// The identity of older versions, which chose their own ID: tried on a
+  /// relay that has given none yet (it may keep it and sign it), never
+  /// overwritten.
   static const idKey = 'dismessage.id';
   static const secretKey = 'dismessage.secret';
 
+  static String idKeyFor(Uri relay) => '$idKey@${_relayKey(relay)}';
+  static String secretKeyFor(Uri relay) => '$secretKey@${_relayKey(relay)}';
+
+  static String _relayKey(Uri relay) => '${relay.host}:${relay.port}';
+
   final KeyValueStore _store;
 
-  /// Returns the stored identity, creating one on first launch.
-  Future<Identity> load() async {
+  /// The identity for [relay]; null when it has to give one (`id_request`).
+  Identity? load(Uri relay) =>
+      _read(idKeyFor(relay), secretKeyFor(relay)) ?? _read(idKey, secretKey);
+
+  Identity? _read(String idKey, String secretKey) {
     final id = _store.getString(idKey);
     final secret = _store.getString(secretKey);
-    if (id != null && secret != null && DismessageId.isValid(id)) {
-      return Identity(id: id, secret: secret);
-    }
-    return regenerate();
+    if (id == null || secret == null || !DismessageId.isValid(id)) return null;
+    return Identity(id: id, secret: secret);
   }
 
-  /// Replaces the stored identity with a brand new one.
-  Future<Identity> regenerate() async {
-    final identity = Identity.generate();
-    await _store.setString(idKey, identity.id);
-    await _store.setString(secretKey, identity.secret);
-    return identity;
+  /// Keeps the identity [relay] gave (new, or the same ID now signed).
+  Future<void> save(Uri relay, Identity identity) async {
+    await _store.setString(idKeyFor(relay), identity.id);
+    await _store.setString(secretKeyFor(relay), identity.secret);
   }
 }

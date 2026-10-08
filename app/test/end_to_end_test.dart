@@ -1,6 +1,5 @@
 // End-to-end: two real ConnectionServices talking through a real relay.
 // Plain `test` (no widget binding) so that real sockets and timers are used.
-import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
 
@@ -14,6 +13,7 @@ import 'package:dismessage_protocol/dismessage_protocol.dart';
 import 'package:dismessage_server/dismessage_server.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:image/image.dart' as img;
+import 'package:web_socket_channel/web_socket_channel.dart';
 
 import 'fakes.dart';
 
@@ -25,6 +25,44 @@ Future<void> waitFor(bool Function() condition, {String? reason}) async {
     }
     await Future<void>.delayed(const Duration(milliseconds: 5));
   }
+}
+
+/// A real connection that records every text the app puts on the wire.
+class SpyChannel implements WebSocketChannel {
+  SpyChannel(this._inner);
+  final WebSocketChannel _inner;
+  final sent = <String>[];
+
+  @override
+  late final WebSocketSink sink = _SpySink(_inner.sink, sent);
+
+  @override
+  Future<void> get ready => _inner.ready;
+
+  @override
+  Stream<dynamic> get stream => _inner.stream;
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
+}
+
+class _SpySink implements WebSocketSink {
+  _SpySink(this._inner, this._sent);
+  final WebSocketSink _inner;
+  final List<String> _sent;
+
+  @override
+  void add(Object? data) {
+    _sent.add(data as String);
+    _inner.add(data);
+  }
+
+  @override
+  Future<void> close([int? closeCode, String? closeReason]) =>
+      _inner.close(closeCode, closeReason);
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
 }
 
 void main() {
@@ -79,6 +117,45 @@ void main() {
     }
     services.clear();
     await server.close(force: true);
+  });
+
+  test('nothing readable crosses the relay, and both see one code', () async {
+    final spies = <SpyChannel>[];
+    Future<ConnectionService> spied() async {
+      final service = ConnectionService(
+        identity: IdentityService(MemoryStore()),
+        serverUri: Uri.parse('ws://localhost:${server.port}/ws'),
+        connect: (uri) {
+          final spy = SpyChannel(WebSocketChannel.connect(uri));
+          spies.add(spy);
+          return spy;
+        },
+      );
+      services.add(service);
+      await service.start();
+      await waitFor(() => service.status == ServerStatus.online);
+      return service;
+    }
+
+    final a = await spied();
+    final b = await spied();
+    await pair(a, b);
+    final mine = a.sessions.single;
+    final theirs = b.sessions.single;
+    await waitFor(() => a.isEncrypted(mine) && b.isEncrypted(theirs));
+
+    mine.updateDraft('Le code du coffre est 4321');
+    await waitFor(() => theirs.remoteDraft == 'Le code du coffre est 4321');
+    expect(mine.sendMessage(), isTrue);
+    await waitFor(() => theirs.messages.isNotEmpty, reason: 'message');
+
+    final wire = spies.expand((s) => s.sent).join(' ');
+    expect(wire, isNot(contains('coffre')));
+    expect(wire, isNot(contains('4321')));
+    expect(wire, contains('"t":"sealed"'));
+    final code = await a.safetyCode(mine);
+    expect(code, isNotNull);
+    expect(await b.safetyCode(theirs), code);
   });
 
   test('A talks to B and C at the same time, isolated', () async {
@@ -203,25 +280,89 @@ void main() {
     await pair(b, a);
   });
 
-  test('switching server at runtime reconnects with the same ID', () async {
-    final store = MemoryStore();
-    final service = ConnectionService(
-      identity: IdentityService(store),
-      serverUri: Uri.parse('ws://localhost:1/ws'), // nothing listens here
-      reconnectDelay: const Duration(milliseconds: 50),
-    );
-    services.add(service);
-    unawaited(service.start());
-    await waitFor(() => service.myId != null, reason: 'identity loaded');
-    final id = service.myId;
-    expect(service.status, isNot(ServerStatus.online));
+  test(
+    'each relay gives its own ID, found again when switching back',
+    () async {
+      final other = await serve(
+        Relay(IdStore.memory()),
+        address: 'localhost',
+        port: 0,
+      );
+      addTearDown(() => other.close(force: true));
+      final store = MemoryStore();
+      final first = await startClient(store);
+      final id = first.myId!;
 
-    await service.setServerUri(Uri.parse('ws://localhost:${server.port}/ws'));
-    await waitFor(
-      () => service.status == ServerStatus.online,
-      reason: 'online on the new server',
+      await first.setServerUri(Uri.parse('ws://localhost:${other.port}/ws'));
+      await waitFor(
+        () => first.status == ServerStatus.online && first.myId != id,
+        reason: 'online on the other relay, with its ID',
+      );
+      await first.setServerUri(Uri.parse('ws://localhost:${server.port}/ws'));
+      await waitFor(
+        () => first.status == ServerStatus.online && first.myId == id,
+        reason: 'back with the first ID',
+      );
+    },
+  );
+
+  test('the ID survives a relay restart that loses its store', () async {
+    final signer = IdSigner.random();
+    await server.close(force: true);
+    server = await serve(
+      Relay(IdStore.memory(), signer: signer),
+      address: 'localhost',
+      port: 0,
     );
-    expect(service.myId, id);
+    final port = server.port;
+    final store = MemoryStore();
+    final a = await startClient(store);
+    final id = a.myId!;
+
+    // Render Free: the store is gone, the key (environment) is not.
+    a.suspend();
+    await server.close(force: true);
+    server = await serve(
+      Relay(IdStore.memory(), signer: signer),
+      address: 'localhost',
+      port: port,
+    );
+    await a.resume();
+    await waitFor(() => a.status == ServerStatus.online, reason: 'back');
+    expect(a.myId, id);
+  });
+
+  group('the own ID of an older version', () {
+    MemoryStore olderStore() => MemoryStore()
+      ..values[IdentityService.idKey] = '482913075'
+      ..values[IdentityService.secretKey] = 'chosen-by-the-app';
+
+    test('is kept and signed by a relay that accepts it', () async {
+      await server.close(force: true);
+      server = await serve(
+        Relay(IdStore.memory(), acceptLegacyIds: true),
+        address: 'localhost',
+        port: 0,
+      );
+      final store = olderStore();
+      final a = await startClient(store);
+      expect(a.myId, '482913075');
+      final relay = Uri.parse('ws://localhost:${server.port}/ws');
+      await waitFor(
+        () => store.values[IdentityService.secretKeyFor(relay)] != null,
+        reason: 'signed secret saved',
+      );
+      expect(
+        store.values[IdentityService.secretKeyFor(relay)],
+        isNot('chosen-by-the-app'),
+      );
+    });
+
+    test('is replaced by a relay that does not accept it', () async {
+      final a = await startClient(olderStore());
+      expect(a.myId, isNot('482913075'));
+      expect(DismessageId.isValid(a.myId!), isTrue);
+    });
   });
 
   test('cancelling a request closes it on the other side', () async {
