@@ -83,6 +83,7 @@ cd app && flutter analyze
 
 # Lancer
 cd server && dart run bin/server.dart            # PORT=8080 par défaut
+cd server && dart run tool/check_relay.dart wss://dismessage.onrender.com/ws   # vérifie un relais en ligne (après un déploiement) : IDs signés, conversation, chiffrement, refus du clair
 cd app && flutter run -d chrome                   # web
 cd app && flutter run -d windows                  # Windows
 cd app && flutter run -d <android> --dart-define=SERVER_URL=ws://10.0.2.2:8080
