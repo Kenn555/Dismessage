@@ -11,19 +11,20 @@ import 'file_storage.dart';
 FileStorage createFileStorage() =>
     Platform.isAndroid ? AndroidFileStorage() : DesktopFileStorage();
 
-Future<ChosenFile?> pickFile() async {
+Future<List<ChosenFile>> pickFiles() async {
   if (Platform.isAndroid) return AndroidFileStorage.pick();
   // Windows: file_selector_windows, through its interface (the app-facing
   // package would pull the Android implementation into the Gradle build).
-  final XFile? file;
+  final List<XFile> files;
   try {
-    file = await FileSelectorPlatform.instance.openFile();
+    files = await FileSelectorPlatform.instance.openFiles();
   } on PlatformException catch (e) {
     throw FileStorageException(e.message ?? e.code);
   }
-  if (file == null) return null;
-  final local = File(file.path);
-  return IoChosenFile(local, file.name, await local.length());
+  return [
+    for (final file in files)
+      IoChosenFile(File(file.path), file.name, await File(file.path).length()),
+  ];
 }
 
 /// A file on disk, read with one handle kept open between chunks.
@@ -205,19 +206,21 @@ class DesktopSavedFile implements SavedFile {
 class AndroidFileStorage implements FileStorage {
   static const channel = MethodChannel('dismessage/files');
 
-  static Future<ChosenFile?> pick() async {
-    final Map<Object?, Object?>? picked;
+  static Future<List<ChosenFile>> pick() async {
+    final List<Map<Object?, Object?>>? picked;
     try {
-      picked = await channel.invokeMapMethod<Object?, Object?>('pick');
+      picked = await channel.invokeListMethod<Map<Object?, Object?>>('pick');
     } on PlatformException catch (e) {
       throw FileStorageException(e.message ?? e.code);
     }
-    if (picked == null) return null;
-    return _AndroidChosenFile(
-      picked['handle']! as int,
-      picked['name']! as String,
-      picked['size']! as int,
-    );
+    return [
+      for (final file in picked ?? const <Map<Object?, Object?>>[])
+        _AndroidChosenFile(
+          file['handle']! as int,
+          file['name']! as String,
+          file['size']! as int,
+        ),
+    ];
   }
 
   @override

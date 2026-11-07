@@ -30,6 +30,8 @@ abstract class CameraCapture {
   Future<void> close();
 }
 
-/// The live camera of this platform, or null when `image_picker` handles
-/// photos itself (Android, phone browsers) or there is none.
-CameraCapture? platformCameraCapture() => platform.createCameraCapture();
+/// The live camera of this platform ([deviceId] if given and still there), or
+/// null when `image_picker` handles photos itself (Android, phone browsers) or
+/// there is none.
+CameraCapture? platformCameraCapture({String? deviceId}) =>
+    platform.createCameraCapture(deviceId);

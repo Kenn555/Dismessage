@@ -46,7 +46,7 @@ void main() {
           cameraAvailable: false,
           createCamera: () => null,
           createAudioBackend: FakeAudioBackend.new,
-          pickFile: pick ?? () async => null,
+          pickFile: pick ?? () async => const [],
         ),
       ),
     );
@@ -60,7 +60,7 @@ void main() {
 
   testWidgets('the paperclip offers the chosen file', (tester) async {
     final file = FakeChosenFile('Budget 2026.xlsx', Uint8List(2048));
-    await pumpChat(tester, pick: () async => file);
+    await pumpChat(tester, pick: () async => [file]);
 
     await tester.tap(find.byKey(const Key('send-file')));
     await tester.pump();
@@ -75,7 +75,7 @@ void main() {
 
   testWidgets('the sender can withdraw the offer', (tester) async {
     final file = FakeChosenFile('a.txt', Uint8List(10));
-    await pumpChat(tester, pick: () async => file);
+    await pumpChat(tester, pick: () async => [file]);
     await tester.tap(find.byKey(const Key('send-file')));
     await tester.pump();
     final id = sent.whereType<FileOfferFrame>().single.fid;
@@ -94,7 +94,7 @@ void main() {
       Uint8List(1),
       size: kMaxFileBytes + 1,
     );
-    await pumpChat(tester, pick: () async => big);
+    await pumpChat(tester, pick: () async => [big]);
 
     await tester.tap(find.byKey(const Key('send-file')));
     await tester.pump();

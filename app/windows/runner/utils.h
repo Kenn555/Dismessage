@@ -1,6 +1,8 @@
 #ifndef RUNNER_UTILS_H_
 #define RUNNER_UTILS_H_
 
+#include <windows.h>
+
 #include <string>
 #include <vector>
 
@@ -15,5 +17,10 @@ std::string Utf8FromUtf16(const wchar_t* utf16_string);
 // Gets the command line arguments passed in as a std::vector<std::string>,
 // encoded in UTF-8. Returns an empty std::vector<std::string> on failure.
 std::vector<std::string> GetCommandLineArguments();
+
+// Keeps conversations out of screenshots and screen recordings: the window
+// is left out of captures (Windows 10 2004+), or shown black in them on older
+// versions. Applied again when the window turns into the overlay panel.
+void ExcludeFromCapture(HWND window);
 
 #endif  // RUNNER_UTILS_H_

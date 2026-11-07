@@ -20,6 +20,13 @@ DraftUpdate deliver(DraftState state, RelayedFrame frame) => switch (frame) {
   FileCancelFrame() ||
   FileChunkFrame() ||
   FileAckFrame() ||
+  LiveRequestFrame() ||
+  LiveAcceptFrame() ||
+  LiveStopFrame() ||
+  LiveEndFrame() ||
+  LiveVideoFrame() ||
+  LiveAckFrame() ||
+  LiveSizeFrame() ||
   ReactionFrame() ||
   KeyOfferFrame() ||
   SealedFrame() => DraftUpdate.ignored,

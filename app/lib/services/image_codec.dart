@@ -87,9 +87,19 @@ abstract final class ImageCodec {
   /// JPEG has no transparency: put transparent pictures on white.
   static img.Image _flatten(img.Image image) {
     if (!image.hasAlpha) return image;
+    // A pasted Windows bitmap often leaves its alpha at 0: not a fully
+    // transparent picture, an opaque one.
+    if (_alphaUnused(image)) return image.convert(numChannels: 3);
     final background = img.Image(width: image.width, height: image.height)
       ..clear(img.ColorRgb8(255, 255, 255));
     return img.compositeImage(background, image);
+  }
+
+  static bool _alphaUnused(img.Image image) {
+    for (final pixel in image) {
+      if (pixel.a != 0) return false;
+    }
+    return true;
   }
 
   /// Tiny, already blurred thumbnail: it reveals nothing of the content.

@@ -58,6 +58,48 @@ void main() {
     expect(result.bytes.sublist(0, 2), [0xFF, 0xD8]);
   });
 
+  test('a pasted Windows bitmap with an unused alpha stays visible', () {
+    // What the runner builds from CF_DIB: 32 bits per pixel, BI_RGB, alpha
+    // bytes left at 0 by the screenshot.
+    const width = 4, height = 4;
+    final bmp = ByteData(14 + 40 + width * height * 4);
+    bmp
+      ..setUint8(0, 0x42)
+      ..setUint8(1, 0x4D)
+      ..setUint32(2, bmp.lengthInBytes, Endian.little)
+      ..setUint32(10, 14 + 40, Endian.little)
+      ..setUint32(14, 40, Endian.little)
+      ..setInt32(18, width, Endian.little)
+      ..setInt32(22, height, Endian.little)
+      ..setUint16(26, 1, Endian.little)
+      ..setUint16(28, 32, Endian.little);
+    for (var i = 0; i < width * height; i++) {
+      // Bytes blue 0xFF, green 0xC8, red 0, alpha 0.
+      bmp.setUint32(54 + i * 4, 0x0000C8FF, Endian.little);
+    }
+    final result = ImageCodec.encode(bmp.buffer.asUint8List());
+    final pixel = img.decodeJpg(result.bytes)!.getPixel(2, 2);
+    // Sky blue, not the white of a "fully transparent" picture.
+    expect(pixel.r, closeTo(0x00, 12));
+    expect(pixel.g, closeTo(0xC8, 12));
+    expect(pixel.b, closeTo(0xFF, 12));
+  });
+
+  test('a picture whose alpha is 0 everywhere is read as opaque', () {
+    final picture = img.Image(width: 4, height: 4, numChannels: 4);
+    for (final pixel in picture) {
+      pixel
+        ..r = 0
+        ..g = 0xC8
+        ..b = 0xFF
+        ..a = 0;
+    }
+    final result = ImageCodec.encode(img.encodePng(picture));
+    final pixel = img.decodeJpg(result.bytes)!.getPixel(2, 2);
+    expect(pixel.r, closeTo(0x00, 12));
+    expect(pixel.b, closeTo(0xFF, 12));
+  });
+
   test('metadata is dropped by re-encoding', () {
     final picture = img.Image(width: 50, height: 50)
       ..exif.imageIfd['Make'] = 'SecretPhone';

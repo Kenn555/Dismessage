@@ -28,6 +28,7 @@ object EngineHolder {
     var notifications: NotificationHandler? = null
         private set
     var files: FileHandler? = null
+    var camera: LiveCameraHandler? = null
         private set
 
     fun get(context: Context): FlutterEngine {
@@ -43,6 +44,8 @@ object EngineHolder {
             .also { notifyChannel.setMethodCallHandler(it) }
         val filesChannel = MethodChannel(messenger, "dismessage/files")
         files = FileHandler(app).also { filesChannel.setMethodCallHandler(it) }
+        val cameraChannel = MethodChannel(messenger, "dismessage/camera")
+        camera = LiveCameraHandler(app).also { cameraChannel.setMethodCallHandler(it) }
         val backgroundChannel = MethodChannel(messenger, "dismessage/background")
         backgroundChannel.setMethodCallHandler { call, result ->
             when (call.method) {

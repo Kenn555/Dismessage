@@ -63,3 +63,13 @@ std::string Utf8FromUtf16(const wchar_t* utf16_string) {
   }
   return utf8_string;
 }
+
+#ifndef WDA_EXCLUDEFROMCAPTURE
+#define WDA_EXCLUDEFROMCAPTURE 0x00000011
+#endif
+
+void ExcludeFromCapture(HWND window) {
+  if (!::SetWindowDisplayAffinity(window, WDA_EXCLUDEFROMCAPTURE)) {
+    ::SetWindowDisplayAffinity(window, WDA_MONITOR);
+  }
+}

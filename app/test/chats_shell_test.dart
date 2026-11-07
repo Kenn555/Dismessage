@@ -276,6 +276,74 @@ void main() {
       await cleanUp(tester);
     });
 
+    Future<void> watch(WidgetTester tester) async {
+      await tester.tap(find.byKey(const Key('live-toggle')));
+      await tester.pump();
+      await channel.receiveSecure(const LiveAcceptFrame(sid: 's1'));
+      await tester.pump();
+      await tester.pump();
+      await tester.pump();
+    }
+
+    testWidgets('the camera view sits at the bottom of the sidebar', (
+      tester,
+    ) async {
+      await pumpHome(tester, desktop);
+      await start(tester, 's1', alice);
+      await tester.tap(find.byKey(const Key('live-toggle')));
+      await tester.pump();
+      // Still waiting: said above the input, nothing in the sidebar.
+      expect(find.byKey(const Key('live-waiting')), findsOneWidget);
+      expect(find.byKey(const Key('sidebar-live')), findsNothing);
+
+      await channel.receiveSecure(const LiveAcceptFrame(sid: 's1'));
+      await tester.pump();
+      await tester.pump();
+      await tester.pump();
+
+      final sidebar = find.byKey(const Key('chats-sidebar'));
+      final view = find.descendant(
+        of: sidebar,
+        matching: find.byKey(const Key('live-view')),
+      );
+      expect(view, findsOneWidget);
+      // Only there, and at the bottom.
+      expect(find.byKey(const Key('live-view')), findsOneWidget);
+      final rect = tester.getRect(view);
+      expect(rect.bottom, closeTo(desktop.height - 12, 1));
+      expect(rect.right, lessThanOrEqualTo(280));
+
+      await tester.tap(find.byKey(const Key('live-close')));
+      await tester.pump();
+      expect(find.byKey(const Key('sidebar-live')), findsNothing);
+      await cleanUp(tester);
+    });
+
+    testWidgets('it shows the camera of the conversation on screen', (
+      tester,
+    ) async {
+      await pumpHome(tester, desktop);
+      await start(tester, 's1', alice);
+      await watch(tester);
+      await start(tester, 's2', bob);
+      await tester.pump();
+      expect(find.byKey(const Key('sidebar-live')), findsNothing);
+      await cleanUp(tester);
+    });
+
+    testWidgets('without a sidebar, the view stays above the input', (
+      tester,
+    ) async {
+      await pumpHome(tester, phone);
+      await start(tester, 's1', alice);
+      await watch(tester);
+      expect(find.byKey(const Key('sidebar-live')), findsNothing);
+      final view = tester.getRect(find.byKey(const Key('live-view')));
+      final input = tester.getRect(find.byKey(const Key('chat-input')));
+      expect(view.bottom, lessThanOrEqualTo(input.top));
+      await cleanUp(tester);
+    });
+
     testWidgets('"new conversation" goes home, conversations kept', (
       tester,
     ) async {

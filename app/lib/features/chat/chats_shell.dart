@@ -4,7 +4,14 @@ import 'package:flutter/material.dart';
 import '../../services/chat_session.dart';
 import '../../services/connection_service.dart';
 import '../../services/contacts_service.dart';
+import '../../services/desktop_overlay.dart';
 import '../../services/id_privacy.dart';
+import '../../services/camera_capture.dart';
+import '../../services/live_fullscreen.dart';
+import '../../services/live_link.dart';
+import '../../widgets/live_view.dart';
+import '../../services/media_devices.dart';
+import '../../services/voice_recorder.dart';
 import '../../theme/app_theme.dart';
 import '../../widgets/presence_avatar.dart';
 import '../../widgets/session_tile.dart';
@@ -26,6 +33,9 @@ class ChatsShell extends StatefulWidget {
     required this.connection,
     required this.contacts,
     this.privacy,
+    this.overlay,
+    this.fullscreen,
+    this.devices,
     this.buildChat,
   });
 
@@ -35,6 +45,13 @@ class ChatsShell extends StatefulWidget {
   final ConnectionService connection;
   final ContactsService contacts;
   final IdPrivacy? privacy;
+
+  /// The Windows overlay panel: while shown, no conversation here is active.
+  final DesktopOverlay? overlay;
+  final LiveFullscreen? fullscreen;
+
+  /// The camera and microphone chosen in the settings.
+  final DevicePreferences? devices;
   final ChatScreenBuilder? buildChat;
 
   @override
@@ -81,6 +98,12 @@ class _ChatsShellState extends State<ChatsShell> {
       connection: _connection,
       contacts: widget.contacts,
       privacy: widget.privacy,
+      overlay: widget.overlay,
+      fullscreen: widget.fullscreen,
+      createCamera: () =>
+          platformCameraCapture(deviceId: widget.devices?.cameraId),
+      createRecorder: () =>
+          platformVoiceRecorder(microphone: () => widget.devices?.microphoneId),
       active: active,
     );
   }
@@ -93,9 +116,10 @@ class _ChatsShellState extends State<ChatsShell> {
         if (didPop) _connection.activate(null);
       },
       child: ListenableBuilder(
-        listenable: _connection,
+        listenable: Listenable.merge([_connection, widget.overlay]),
         builder: (context, _) {
           final sessions = _connection.sessions;
+          final overlaid = widget.overlay?.active ?? false;
           if (sessions.isEmpty) return const Scaffold();
           final active = _connection.active ?? sessions.last;
           final chats = IndexedStack(
@@ -106,8 +130,8 @@ class _ChatsShellState extends State<ChatsShell> {
                   key: ValueKey(session.sid),
                   excluding: session != active,
                   child: TickerMode(
-                    enabled: session == active,
-                    child: _chat(session, session == active),
+                    enabled: session == active && !overlaid,
+                    child: _chat(session, session == active && !overlaid),
                   ),
                 ),
             ],
@@ -133,11 +157,12 @@ class _ChatsShellState extends State<ChatsShell> {
                           onOpen: _connection.activate,
                           onClose: _connection.closeSession,
                           onNew: () => Navigator.of(context).maybePop(),
+                          fullscreen: widget.fullscreen,
                         ),
                       ),
                     ),
                     const VerticalDivider(width: 1),
-                    Expanded(child: chats),
+                    Expanded(child: LiveViewInSidebar(child: chats)),
                   ],
                 );
               }
@@ -180,6 +205,7 @@ class _Sidebar extends StatelessWidget {
     required this.onOpen,
     required this.onClose,
     required this.onNew,
+    this.fullscreen,
   });
 
   final List<ChatSession> sessions;
@@ -188,6 +214,37 @@ class _Sidebar extends StatelessWidget {
   final void Function(ChatSession) onOpen;
   final void Function(ChatSession) onClose;
   final VoidCallback onNew;
+  final LiveFullscreen? fullscreen;
+
+  /// The camera of the conversation on screen, at the bottom. Taps here keep
+  /// the input focused.
+  Widget _liveView(BuildContext context) {
+    final live = active.live;
+    final maxHeight = MediaQuery.sizeOf(context).height * 0.4;
+    return TextFieldTapRegion(
+      child: Padding(
+        key: const Key('sidebar-live'),
+        padding: const EdgeInsets.fromLTRB(12, 4, 12, 12),
+        child: ValueListenableBuilder(
+          valueListenable: live.image,
+          builder: (context, image, child) => ConstrainedBox(
+            constraints: BoxConstraints(maxHeight: maxHeight),
+            child: AspectRatio(
+              aspectRatio: liveAspectRatio(image),
+              child: child,
+            ),
+          ),
+          child: LiveViewCard(
+            image: live.image,
+            onFullscreen: fullscreen == null
+                ? null
+                : () => fullscreen!.toggle(active),
+            onClose: live.stopWatching,
+          ),
+        ),
+      ),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -232,6 +289,7 @@ class _Sidebar extends StatelessWidget {
                 ],
               ),
             ),
+            if (active.live.watch == LiveWatch.watching) _liveView(context),
           ],
         ),
       ),

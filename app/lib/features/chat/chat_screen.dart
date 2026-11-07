@@ -6,13 +6,18 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
 
+import '../../services/attachments.dart';
 import '../../services/camera_capture.dart';
 import '../../services/chat_session.dart';
+import '../../services/clipboard_images.dart';
 import '../../services/connection_service.dart';
 import '../../services/contacts_service.dart';
+import '../../services/desktop_overlay.dart';
 import '../../services/file_storage.dart';
 import '../../services/id_privacy.dart';
 import '../../services/image_codec.dart';
+import '../../services/live_fullscreen.dart';
+import '../../services/live_link.dart';
 import '../../services/voice_player.dart';
 import '../../services/voice_recorder.dart';
 import '../../theme/app_theme.dart';
@@ -24,27 +29,36 @@ import '../../widgets/emoji_panel.dart';
 import '../../widgets/file_bubble.dart';
 import '../../widgets/image_bubble.dart';
 import '../../widgets/live_draft_bubble.dart';
+import '../../widgets/live_view.dart';
 import '../../widgets/message_actions.dart';
 import '../../widgets/voice_bubble.dart';
 import 'camera_screen.dart';
 
 export 'package:image_picker/image_picker.dart' show ImageSource;
 
-/// Lets the user take or choose a picture; null if cancelled.
-typedef ImagePickerFn = Future<Uint8List?> Function(ImageSource source);
+/// Lets the user take a picture, or choose several (at most
+/// [kMaxImagesPerSend]); empty if cancelled.
+typedef ImagePickerFn = Future<List<Uint8List>> Function(ImageSource source);
 
-/// Turns picked bytes into a sendable image.
-typedef ImageEncoderFn = Future<EncodedImage> Function(Uint8List bytes);
-
-Future<Uint8List?> _pickImage(ImageSource source) async {
-  final file = await ImagePicker().pickImage(
-    source: source,
-    // Native downscale (mobile, browser canvas): the Dart encoder is slow on
-    // a 12 MP photo, and on the web it runs on the UI thread.
-    maxWidth: kMaxImageSide.toDouble(),
-    maxHeight: kMaxImageSide.toDouble(),
-  );
-  return file?.readAsBytes();
+Future<List<Uint8List>> _pickImage(ImageSource source) async {
+  // Native downscale (mobile, browser canvas): the Dart encoder is slow on
+  // a 12 MP photo, and on the web it runs on the UI thread.
+  final side = kMaxImageSide.toDouble();
+  final picker = ImagePicker();
+  final files = source == ImageSource.camera
+      ? [
+          ?await picker.pickImage(
+            source: source,
+            maxWidth: side,
+            maxHeight: side,
+          ),
+        ]
+      : await picker.pickMultiImage(
+          maxWidth: side,
+          maxHeight: side,
+          limit: kMaxImagesPerSend,
+        );
+  return [for (final file in files) await file.readAsBytes()];
 }
 
 class ChatScreen extends StatefulWidget {
@@ -59,7 +73,10 @@ class ChatScreen extends StatefulWidget {
     this.encodeImage = ImageCodec.encodeInBackground,
     this.createRecorder = platformVoiceRecorder,
     this.createAudioBackend = platformAudioBackend,
-    this.pickFile = platformPickFile,
+    this.pickFile = platformPickFiles,
+    this.clipboardImages,
+    this.overlay,
+    this.fullscreen,
     this.privacy,
     this.active = true,
   });
@@ -79,8 +96,17 @@ class ChatScreen extends StatefulWidget {
   final VoiceRecorder Function() createRecorder;
   final AudioBackend Function() createAudioBackend;
 
-  /// Chooses a file to send directly to the peer.
+  /// Chooses files to send directly to the peer.
   final FilePickerFn pickFile;
+
+  /// Images and files pasted into the input; the platform's when null.
+  final ClipboardImages? clipboardImages;
+
+  /// The Windows overlay panel (header button); null elsewhere.
+  final DesktopOverlay? overlay;
+
+  /// The peer's camera in full screen.
+  final LiveFullscreen? fullscreen;
 
   /// Which IDs are shown in full (a saved contact's is masked by default).
   final IdPrivacy? privacy;
@@ -126,10 +152,20 @@ class _ChatScreenState extends State<ChatScreen> {
 
   ChatSession get _session => widget.session;
   late final IdPrivacy _privacy = widget.privacy ?? IdPrivacy();
+  late final ClipboardImages _clipboard =
+      widget.clipboardImages ?? platformClipboardImages();
+  StreamSubscription<Attachments>? _pastes;
+  StreamSubscription<String>? _liveNotices;
 
   @override
   void initState() {
     super.initState();
+    _syncInput();
+    _pastes = _clipboard.pasted.listen(_onPasted);
+    _liveNotices = _session.live.notices.listen((message) {
+      if (mounted && widget.active) _snack(message);
+    });
+    widget.fullscreen?.addListener(_onFullscreen);
     _shownCount = _session.messages.length;
     _session.addListener(_onSessionChanged);
     _scroll.addListener(_onScroll);
@@ -140,11 +176,35 @@ class _ChatScreenState extends State<ChatScreen> {
   @override
   void didUpdateWidget(ChatScreen oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (widget.active && !oldWidget.active) _refocus();
+    if (widget.active && !oldWidget.active) {
+      _syncInput();
+      _refocus();
+    }
+  }
+
+  /// Takes what was typed elsewhere (the Windows overlay panel).
+  void _syncInput() {
+    final draft = _session.localDraft;
+    if (_input.text == draft) return;
+    _input.value = TextEditingValue(
+      text: draft,
+      selection: TextSelection.collapsed(offset: draft.length),
+    );
+  }
+
+  /// Back from full screen: the keyboard returns to the input.
+  void _onFullscreen() {
+    if (widget.fullscreen?.active ?? false) return;
+    // What was typed in the panel over the camera.
+    _syncInput();
+    _refocus();
   }
 
   @override
   void dispose() {
+    _pastes?.cancel();
+    _liveNotices?.cancel();
+    widget.fullscreen?.removeListener(_onFullscreen);
     _session.removeListener(_onSessionChanged);
     _player
       ..removeListener(_onPlayerChanged)
@@ -223,8 +283,18 @@ class _ChatScreenState extends State<ChatScreen> {
     context,
   ).showSnackBar(SnackBar(content: Text(message)));
 
-  /// Physical keyboard: Enter sends, Shift+Enter starts a new line.
+  /// Physical keyboard: Enter sends, Shift+Enter starts a new line. On
+  /// Windows, Ctrl+V also pastes pictures.
   KeyEventResult _onKey(FocusNode node, KeyEvent event) {
+    final keyboard = HardwareKeyboard.instance;
+    if (event.logicalKey == LogicalKeyboardKey.keyV &&
+        keyboard.isControlPressed &&
+        !keyboard.isShiftPressed &&
+        !keyboard.isAltPressed &&
+        _clipboard.readsOnPasteKey) {
+      if (event is KeyDownEvent) _paste();
+      return KeyEventResult.handled;
+    }
     final enter =
         event.logicalKey == LogicalKeyboardKey.enter ||
         event.logicalKey == LogicalKeyboardKey.numpadEnter;
@@ -243,18 +313,23 @@ class _ChatScreenState extends State<ChatScreen> {
     _refocus();
   }
 
-  /// Inserts [emoji] at the cursor (or replaces the selection).
-  void _insertEmoji(String emoji) {
+  /// Inserts [inserted] (an emoji, pasted text) at the cursor, or replaces
+  /// the selection.
+  void _insertText(String inserted) {
     final value = _input.value;
     final selection = value.selection.isValid
         ? value.selection
         : TextSelection.collapsed(offset: value.text.length);
-    final text = value.text.replaceRange(selection.start, selection.end, emoji);
+    final text = value.text.replaceRange(
+      selection.start,
+      selection.end,
+      inserted,
+    );
     if (text.length > kMaxTextLength) return _refocus();
     _input.value = TextEditingValue(
       text: text,
       selection: TextSelection.collapsed(
-        offset: selection.start + emoji.length,
+        offset: selection.start + inserted.length,
       ),
     );
     // Programmatic changes do not trigger onChanged: stream it ourselves.
@@ -297,48 +372,136 @@ class _ChatScreenState extends State<ChatScreen> {
   }
 
   Future<void> _sendImage(ImageSource source) async {
-    final messenger = ScaffoldMessenger.of(context);
     final navigator = Navigator.of(context);
+    final List<Uint8List> picked;
     setState(() => _preparingImage = true);
     try {
       final camera = source == ImageSource.camera
           ? widget.createCamera()
           : null;
-      final picked = camera == null
+      picked = camera == null
           ? await widget.pickImage(source)
-          : await navigator.push<Uint8List>(
-              MaterialPageRoute(
-                fullscreenDialog: true,
-                builder: (_) => CameraScreen(capture: camera),
+          : [
+              ?await navigator.push<Uint8List>(
+                MaterialPageRoute(
+                  fullscreenDialog: true,
+                  builder: (_) => CameraScreen(capture: camera),
+                ),
               ),
-            );
-      if (picked == null) return;
-      final encoded = await widget.encodeImage(picked);
-      if (_session.sendImage(encoded, replyTo: _replyTo) != null && mounted) {
+            ];
+    } catch (e) {
+      if (mounted) {
+        setState(() => _preparingImage = false);
+        _snack(
+          _failure(
+            source == ImageSource.camera
+                ? "Impossible d'utiliser l'appareil photo"
+                : "Impossible d'envoyer l'image",
+            e,
+          ),
+        );
+      }
+      return _refocus();
+    }
+    await _sendImages(picked);
+  }
+
+  Future<void> _sendImages(List<Uint8List> pictures) =>
+      _sendAttachments(Attachments(images: pictures));
+
+  /// Encodes what was chosen or pasted, then offers it all at once: the peer
+  /// answers with a single validation. Only the first answers the reply in
+  /// progress.
+  Future<void> _sendAttachments(Attachments attachments) async {
+    if (!mounted) return;
+    if (attachments.isEmpty) {
+      // Cancelled: the image button may be waiting for this.
+      setState(() => _preparingImage = false);
+      return _refocus();
+    }
+    final messenger = ScaffoldMessenger.of(context);
+    final replyTo = _replyTo;
+    final before = _session.messages.length;
+    setState(() => _preparingImage = true);
+    String? notice;
+    try {
+      notice = await sendAttachments(
+        _session,
+        attachments,
+        encode: widget.encodeImage,
+        replyTo: replyTo,
+      );
+      if (mounted && _session.messages.length > before) {
         setState(() => _replyTo = null);
       }
-    } on ImageCodecException catch (e) {
-      messenger.showSnackBar(SnackBar(content: Text(e.message)));
-    } catch (e) {
-      // Show the cause: a remote friend can then report it.
-      final cause = e.toString().split('\n').first;
-      messenger.showSnackBar(
-        SnackBar(
-          content: Text(
-            '${source == ImageSource.camera ? "Impossible d'utiliser l'appareil photo" : "Impossible d'envoyer l'image"} '
-            '(${cause.length > 160 ? '${cause.substring(0, 160)}…' : cause}).',
-          ),
-        ),
-      );
     } finally {
       if (mounted) setState(() => _preparingImage = false);
       _refocus();
     }
+    if (notice != null) {
+      messenger.showSnackBar(SnackBar(content: Text(notice)));
+    }
   }
 
-  /// Offers a file: the peer must accept it before anything is sent.
+  /// Shows the cause: a remote friend can then report it.
+  static String _failure(String what, Object error) {
+    final cause = error.toString().split('\n').first;
+    final short = cause.length > 160 ? '${cause.substring(0, 160)}…' : cause;
+    return '$what ($short).';
+  }
+
+  /// Ctrl+V on Windows: the pictures and files on the clipboard, else its
+  /// text.
+  Future<void> _paste() async {
+    final content = await _clipboard.read();
+    if (!mounted || _session.peerLeft) {
+      await content.discard();
+      return;
+    }
+    if (!content.isEmpty) return _confirmPaste(content);
+    final data = await Clipboard.getData(Clipboard.kTextPlain);
+    final text = data?.text;
+    if (text == null || text.isEmpty || !mounted) return;
+    _insertText(text);
+  }
+
+  /// What was pasted in the browser, while this input has the focus.
+  void _onPasted(Attachments content) {
+    if (!mounted || !widget.active || !_focus.hasFocus) {
+      content.discard();
+      return;
+    }
+    _confirmPaste(content);
+  }
+
+  /// A picture inserted by the Android keyboard (its clipboard, a sticker).
+  void _onContentInserted(KeyboardInsertedContent content) {
+    final data = content.data;
+    if (data == null || !content.mimeType.startsWith('image/')) return;
+    _confirmPaste(Attachments(images: [data]));
+  }
+
+  /// A paste can be a mistake: what would leave is shown first.
+  Future<void> _confirmPaste(Attachments content) async {
+    if (_session.peerLeft || _preparingImage) {
+      await content.discard();
+      return;
+    }
+    final send = await showDialog<bool>(
+      context: context,
+      builder: (context) => _PasteDialog(content: content),
+    );
+    if (send ?? false) {
+      await _sendAttachments(content);
+    } else {
+      await content.discard();
+      _refocus();
+    }
+  }
+
+  /// Offers files: the peer must accept them before anything is sent.
   Future<void> _chooseFile() async {
-    final ChosenFile? picked;
+    final List<ChosenFile> picked;
     try {
       picked = await widget.pickFile();
     } catch (e) {
@@ -346,21 +509,8 @@ class _ChatScreenState extends State<ChatScreen> {
       if (mounted) _snack('Impossible de choisir un fichier ($cause).');
       return _refocus();
     }
-    if (picked == null || !mounted) return _refocus();
-    if (picked.size > kMaxFileBytes) {
-      await picked.close();
-      _snack(
-        'Fichier trop volumineux (${formatFileSize(picked.size)}, '
-        'maximum ${formatFileSize(kMaxFileBytes)}).',
-      );
-      return _refocus();
-    }
-    if (_session.sendFile(picked, replyTo: _replyTo) == null) {
-      await picked.close();
-    } else {
-      setState(() => _replyTo = null);
-    }
-    _refocus();
+    if (!mounted) return;
+    await _sendAttachments(Attachments(files: picked));
   }
 
   Future<void> _openSaved(ChatFile file, {bool folder = false}) async {
@@ -501,7 +651,73 @@ class _ChatScreenState extends State<ChatScreen> {
     );
   }
 
-  Widget _bubble(ChatEntry entry) {
+  /// The bubbles, what was sent together answered once and its files in one
+  /// bubble.
+  List<Widget> _timelineWidgets() {
+    final done = <String>{};
+    return [
+      for (final entry in _session.messages)
+        ...switch (entry.group) {
+          null => [_bubble(entry)],
+          final group => _groupMember(entry, group, done),
+        },
+    ];
+  }
+
+  List<Widget> _groupMember(ChatEntry entry, String group, Set<String> done) {
+    final members = _session.inGroup(group);
+    final files = members.whereType<ChatFile>().toList();
+    final first = done.add(group);
+    return [
+      if (first && !entry.fromMe) ?_groupBar(group, members, files),
+      // Several files share a bubble, at the place of the first one.
+      if (entry is! ChatFile || files.length == 1)
+        _bubble(entry, grouped: true)
+      else if (entry == files.first)
+        _bubble(entry, grouped: true, groupFiles: files),
+    ];
+  }
+
+  /// What is left to answer in this group: nothing once it was answered.
+  Widget? _groupBar(
+    String group,
+    List<ChatEntry> members,
+    List<ChatFile> files,
+  ) {
+    final waiting = files.where((f) => f.status == FileStatus.awaiting).toList();
+    final blurred = members
+        .whereType<ChatImage>()
+        .where((i) => i.status == ImageStatus.blurred)
+        .length;
+    if (waiting.isEmpty && blurred == 0) return null;
+    final live = !_session.peerLeft;
+    final size = waiting.fold(0, (total, f) => total + f.size);
+    return GroupOfferBar(
+      group: group,
+      label: [
+        describeAttachments(blurred, waiting.length),
+        if (waiting.isNotEmpty) '(${formatFileSize(size)})',
+      ].join(' '),
+      onAccept: live
+          ? () {
+              _session.acceptGroup(group);
+              _refocus();
+            }
+          : null,
+      onDecline: waiting.isEmpty
+          ? null
+          : () {
+              _session.cancelGroup(group);
+              _refocus();
+            },
+    );
+  }
+
+  Widget _bubble(
+    ChatEntry entry, {
+    bool grouped = false,
+    List<ChatFile>? groupFiles,
+  }) {
     final live = !_session.peerLeft;
     return BubbleShell(
       key: _keys.putIfAbsent(entry.id, GlobalKey.new),
@@ -524,8 +740,19 @@ class _ChatScreenState extends State<ChatScreen> {
           player: _player,
           header: _quoteFor(entry, onBrand: entry.fromMe),
         ),
+        ChatFile() when groupFiles != null => FileGroupBubble(
+          files: groupFiles,
+          onCancel: (file) {
+            _session.cancelFile(file);
+            _refocus();
+          },
+          onOpen: _openSaved,
+          onShowInFolder: (file) => _openSaved(file, folder: true),
+          header: _quoteFor(entry, onBrand: entry.fromMe),
+        ),
         ChatFile() => FileBubble(
           file: entry,
+          grouped: grouped,
           onAccept: live ? () => _session.acceptFile(entry) : null,
           onCancel: () {
             _session.cancelFile(entry);
@@ -645,14 +872,53 @@ class _ChatScreenState extends State<ChatScreen> {
     _close();
   }
 
+  void _toggleFullscreen() => widget.fullscreen?.toggle(_session);
+
+  /// See the peer's camera, or stop.
+  void _toggleLive() {
+    final live = _session.live;
+    if (live.watch == LiveWatch.idle) {
+      live.request();
+    } else {
+      live.stopWatching();
+    }
+    _refocus();
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    // Rebuilt without the screen: only the shortcuts depend on the camera.
+    return ListenableBuilder(
+      listenable: _session.timeline,
+      builder: (context, child) => CallbackShortcuts(
+        bindings: {
+          if (_session.live.watch == LiveWatch.watching) ...{
+            const SingleActivator(LogicalKeyboardKey.f11): _toggleFullscreen,
+            const SingleActivator(
+              LogicalKeyboardKey.keyF,
+              control: true,
+              alt: true,
+            ): _toggleFullscreen,
+          },
+        },
+        child: child!,
+      ),
+      child: _screen(context, theme),
+    );
+  }
+
+  Widget _screen(BuildContext context, ThemeData theme) {
     return Scaffold(
       appBar: AppBar(
         titleSpacing: 0,
         title: ListenableBuilder(
-          listenable: Listenable.merge([widget.contacts, _session, _privacy]),
+          // Not the session: the peer's typing would rebuild this each time.
+          listenable: Listenable.merge([
+            widget.contacts,
+            _session.timeline,
+            _privacy,
+          ]),
           builder: (context, _) {
             final contact = widget.contacts.byId(_session.peer);
             final id = DismessageId.format(_session.peer);
@@ -715,6 +981,33 @@ class _ChatScreenState extends State<ChatScreen> {
         ),
         actions: [
           ListenableBuilder(
+            listenable: _session.timeline,
+            builder: (context, _) {
+              final watch = _session.live.watch;
+              return IconButton(
+                key: const Key('live-toggle'),
+                tooltip: switch (watch) {
+                  LiveWatch.idle => 'Demander à voir sa caméra',
+                  LiveWatch.requesting => 'Annuler la demande',
+                  LiveWatch.watching => 'Fermer la vue',
+                },
+                icon: Icon(switch (watch) {
+                  LiveWatch.idle => Icons.videocam_outlined,
+                  LiveWatch.requesting => Icons.hourglass_top_rounded,
+                  LiveWatch.watching => Icons.videocam_off_outlined,
+                }),
+                onPressed: _session.peerLeft ? null : _toggleLive,
+              );
+            },
+          ),
+          if (widget.overlay case final overlay?)
+            IconButton(
+              key: const Key('enter-overlay'),
+              tooltip: 'Superposer aux autres fenêtres (Ctrl+Alt+D)',
+              icon: const Icon(Icons.picture_in_picture_alt_rounded),
+              onPressed: () => overlay.enter(_session),
+            ),
+          ListenableBuilder(
             listenable: widget.contacts,
             builder: (context, _) {
               final saved = widget.contacts.byId(_session.peer) != null;
@@ -731,7 +1024,7 @@ class _ChatScreenState extends State<ChatScreen> {
             },
           ),
           ListenableBuilder(
-            listenable: _session,
+            listenable: _session.timeline,
             builder: (context, _) => IconButton(
               key: const Key('close-session'),
               tooltip: _session.peerLeft
@@ -771,7 +1064,9 @@ class _ChatScreenState extends State<ChatScreen> {
         ],
       ),
       body: ListenableBuilder(
-        listenable: _session,
+        // The peer's typing rebuilds only its own zone below: every bubble
+        // would otherwise be rebuilt at each of their keystrokes.
+        listenable: _session.timeline,
         builder: (context, _) {
           final empty = _session.messages.isEmpty;
           return Column(
@@ -788,6 +1083,10 @@ class _ChatScreenState extends State<ChatScreen> {
                     ),
                   ],
                 ),
+              if (_session.live.share == LiveShare.asked) _liveRequestBanner(),
+              if (_session.live.share == LiveShare.starting ||
+                  _session.live.share == LiveShare.sharing)
+                _sharingBar(context),
               Expanded(
                 child: empty
                     ? const _EmptyConversation()
@@ -801,10 +1100,7 @@ class _ChatScreenState extends State<ChatScreen> {
                             padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
                             child: Column(
                               crossAxisAlignment: CrossAxisAlignment.stretch,
-                              children: [
-                                for (final entry in _session.messages)
-                                  _bubble(entry),
-                              ],
+                              children: _timelineWidgets(),
                             ),
                           ),
                           Positioned(
@@ -821,7 +1117,16 @@ class _ChatScreenState extends State<ChatScreen> {
               ),
               // Fixed above the input: the peer's typing never moves the
               // list, which can be scrolled meanwhile.
-              _liveDraft(context),
+              ListenableBuilder(
+                listenable: _session.typing,
+                builder: (context, _) => _liveDraft(context),
+              ),
+              // The view itself goes to the sidebar, when there is one.
+              if (widget.active &&
+                  (_session.live.watch == LiveWatch.requesting ||
+                      (_session.live.watch == LiveWatch.watching &&
+                          !LiveViewInSidebar.of(context))))
+                _liveZone(context),
               // Taps here keep the input focused (no "tap outside").
               TextFieldTapRegion(
                 child: Column(
@@ -831,7 +1136,7 @@ class _ChatScreenState extends State<ChatScreen> {
                       _replyBar(context),
                     _composer(context),
                     if (_showEmojis && !_session.peerLeft && !_recording)
-                      ExcludeFocus(child: EmojiPanel(onSelected: _insertEmoji)),
+                      ExcludeFocus(child: EmojiPanel(onSelected: _insertText)),
                   ],
                 ),
               ),
@@ -870,6 +1175,147 @@ class _ChatScreenState extends State<ChatScreen> {
       ),
     );
   }
+
+  /// The peer asks for my camera: it stays off unless I agree, here, each
+  /// time. Buttons rather than a dialog: Enter, while typing, answers nothing.
+  Widget _liveRequestBanner() {
+    final name = widget.contacts.label(_session.peer);
+    return MaterialBanner(
+      key: const Key('live-request-banner'),
+      leading: const Icon(Icons.videocam_rounded),
+      content: Text(
+        '$name demande à voir votre caméra. Elle reste éteinte si vous '
+        'refusez.',
+      ),
+      actions: [
+        TextButton(
+          key: const Key('live-deny'),
+          onPressed: () {
+            _session.live.declineRequest();
+            _refocus();
+          },
+          child: const Text('Refuser'),
+        ),
+        FilledButton(
+          key: const Key('live-allow'),
+          onPressed: () {
+            _session.live.acceptRequest();
+            _refocus();
+          },
+          child: const Text('Autoriser'),
+        ),
+      ],
+    );
+  }
+
+  /// As long as my camera is on, it shows, with what the peer sees.
+  Widget _sharingBar(BuildContext context) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final name = widget.contacts.label(_session.peer);
+    return Material(
+      key: const Key('live-sharing-bar'),
+      color: scheme.errorContainer,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 6, 8, 6),
+        child: Row(
+          children: [
+            const _RecordingDot(),
+            const SizedBox(width: 10),
+            ClipRRect(
+              borderRadius: BorderRadius.circular(6),
+              child: SizedBox(
+                width: 48,
+                height: 36,
+                child: LiveSurface(image: _session.live.ownImage),
+              ),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                '$name voit votre caméra',
+                overflow: TextOverflow.ellipsis,
+                style: theme.textTheme.bodyMedium?.copyWith(
+                  color: scheme.onErrorContainer,
+                ),
+              ),
+            ),
+            TextButton(
+              key: const Key('live-stop-sharing'),
+              onPressed: () {
+                _session.live.stopSharing();
+                _refocus();
+              },
+              child: const Text('Arrêter'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// The peer's camera above the input, half as wide. A tap (or F11) puts it
+  /// in full screen.
+  Widget _liveZone(BuildContext context) {
+    final live = _session.live;
+    if (live.watch == LiveWatch.requesting) {
+      final name = widget.contacts.label(_session.peer);
+      return Padding(
+        key: const Key('live-waiting'),
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+        child: Row(
+          children: [
+            const SizedBox.square(
+              dimension: 14,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                'En attente de l’accord de $name…',
+                overflow: TextOverflow.ellipsis,
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        // The field: the width less the margins and the send button.
+        final field = constraints.maxWidth - 12 - 12 - 8 - 52;
+        return Padding(
+          padding: const EdgeInsets.only(left: 12, top: 4),
+          child: Align(
+            alignment: Alignment.centerLeft,
+            child: ValueListenableBuilder(
+              valueListenable: live.image,
+              builder: (context, image, child) {
+                final maxHeight = MediaQuery.sizeOf(context).height * 0.4;
+                final width = field / 2;
+                final height = width / liveAspectRatio(image);
+                return SizedBox(
+                  width: height > maxHeight
+                      ? maxHeight * liveAspectRatio(image)
+                      : width,
+                  height: height > maxHeight ? maxHeight : height,
+                  child: child,
+                );
+              },
+              child: _liveView(live),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _liveView(LiveLink live) => LiveViewCard(
+    image: live.image,
+    onFullscreen: widget.fullscreen == null ? null : _toggleFullscreen,
+    onClose: _toggleLive,
+  );
 
   /// The bubble being answered, above the input.
   Widget _replyBar(BuildContext context) {
@@ -986,6 +1432,9 @@ class _ChatScreenState extends State<ChatScreen> {
             textInputAction: TextInputAction.newline,
             textCapitalization: TextCapitalization.sentences,
             onChanged: _session.updateDraft,
+            contentInsertionConfiguration: ContentInsertionConfiguration(
+              onContentInserted: _onContentInserted,
+            ),
             decoration: const InputDecoration(
               hintText: 'Écrivez…',
               filled: false,
@@ -1101,6 +1550,86 @@ class _JumpToBottom extends StatelessWidget {
           ),
         ),
       ),
+    );
+  }
+}
+
+/// What was pasted, sent only once confirmed.
+class _PasteDialog extends StatelessWidget {
+  const _PasteDialog({required this.content});
+
+  final Attachments content;
+
+  String get _title {
+    final images = content.images.take(kMaxImagesPerSend).toList();
+    if (content.files.isEmpty && images.length == 1) return 'Envoyer l’image ?';
+    return 'Envoyer ${describeAttachments(images.length, content.files.length)} ?';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final images = content.images.take(kMaxImagesPerSend).toList();
+    final single = images.length == 1 && content.files.isEmpty;
+    return AlertDialog(
+      key: const Key('paste-dialog'),
+      title: Text(_title),
+      content: SizedBox(
+        width: 360,
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              if (single)
+                ConstrainedBox(
+                  constraints: const BoxConstraints(maxHeight: 280),
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(12),
+                    child: Image.memory(images.single, fit: BoxFit.contain),
+                  ),
+                )
+              else if (images.isNotEmpty)
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
+                    for (final image in images)
+                      ClipRRect(
+                        borderRadius: BorderRadius.circular(10),
+                        child: Image.memory(
+                          image,
+                          width: 80,
+                          height: 80,
+                          fit: BoxFit.cover,
+                          cacheWidth: 160,
+                        ),
+                      ),
+                  ],
+                ),
+              for (final file in content.files)
+                ListTile(
+                  dense: true,
+                  contentPadding: EdgeInsets.zero,
+                  leading: const Icon(Icons.insert_drive_file_rounded),
+                  title: Text(file.name, overflow: TextOverflow.ellipsis),
+                  subtitle: Text(formatFileSize(file.size)),
+                ),
+            ],
+          ),
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context, false),
+          child: const Text('Annuler'),
+        ),
+        FilledButton(
+          key: const Key('paste-send'),
+          autofocus: true,
+          onPressed: () => Navigator.pop(context, true),
+          child: const Text('Envoyer'),
+        ),
+      ],
     );
   }
 }

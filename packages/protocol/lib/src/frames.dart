@@ -92,6 +92,7 @@ sealed class Frame {
           height: r.dimension('h'),
           preview: r.base64('preview', kMaxImagePreviewLength),
           reply: r.optionalEntryId('reply'),
+          group: r.optionalEntryId('group'),
         ),
         'image_request' => ImageRequestFrame(
           sid: r.str('sid'),
@@ -116,6 +117,7 @@ sealed class Frame {
           name: r.fileName(),
           size: r.fileSize(),
           reply: r.optionalEntryId('reply'),
+          group: r.optionalEntryId('group'),
         ),
         'file_accept' => FileAcceptFrame(
           sid: r.str('sid'),
@@ -136,6 +138,18 @@ sealed class Frame {
           fid: r.entryId('fid'),
           count: r.chunkIndex('n', last: FileChunks.count(kMaxFileBytes)),
         ),
+        'live_request' => LiveRequestFrame(sid: r.str('sid')),
+        'live_accept' => LiveAcceptFrame(sid: r.str('sid')),
+        'live_stop' => LiveStopFrame(sid: r.str('sid')),
+        'live_end' => LiveEndFrame(sid: r.str('sid'), reason: r.liveEndReason()),
+        'live_frame' => LiveVideoFrame(
+          sid: r.str('sid'),
+          n: r.positive('n'),
+          data: r.base64('data', kMaxLiveFrameDataLength),
+          sentAt: r.optionalCount('at'),
+        ),
+        'live_size' => LiveSizeFrame(sid: r.str('sid'), side: r.positive('side')),
+        'live_ack' => LiveAckFrame(sid: r.str('sid'), n: r.positive('n')),
         'key_offer' => KeyOfferFrame(sid: r.str('sid'), key: r.publicKey()),
         'sealed' => SealedFrame(
           sid: r.str('sid'),
@@ -441,6 +455,7 @@ class ImageOfferFrame extends RelayedFrame {
     required this.height,
     required this.preview,
     this.reply,
+    this.group,
   });
 
   /// Image ID, also its bubble ID (an [EntryId]).
@@ -449,6 +464,10 @@ class ImageOfferFrame extends RelayedFrame {
   final int height;
   final String preview;
   final String? reply;
+
+  /// Sent together with other images and files, which the receiver takes
+  /// with a single validation (see [FileOfferFrame.group]).
+  final String? group;
   @override
   String get type => 'image_offer';
   @override
@@ -459,6 +478,7 @@ class ImageOfferFrame extends RelayedFrame {
     'h': height,
     'preview': preview,
     'reply': ?reply,
+    'group': ?group,
   };
 }
 
@@ -525,6 +545,7 @@ class FileOfferFrame extends RelayedFrame {
     required this.name,
     required this.size,
     this.reply,
+    this.group,
   });
 
   /// File ID, also its bubble ID (an [EntryId]).
@@ -534,6 +555,11 @@ class FileOfferFrame extends RelayedFrame {
   final String name;
   final int size;
   final String? reply;
+
+  /// [EntryId] shared by what was sent together: the receiver answers for
+  /// the whole group at once. Each file is still accepted by its own
+  /// [FileAcceptFrame]: nothing is ever taken without the receiver's choice.
+  final String? group;
   @override
   String get type => 'file_offer';
   @override
@@ -543,6 +569,7 @@ class FileOfferFrame extends RelayedFrame {
     'name': name,
     'size': size,
     'reply': ?reply,
+    'group': ?group,
   };
 }
 
@@ -604,6 +631,101 @@ class FileAckFrame extends RelayedFrame {
   String get type => 'file_ack';
   @override
   Map<String, Object?> fieldsToJson() => {'sid': sid, 'fid': fid, 'n': count};
+}
+
+/// Viewer → camera owner: asks to see the owner's camera. Nothing is filmed
+/// until the owner agrees ([LiveAcceptFrame]).
+class LiveRequestFrame extends RelayedFrame {
+  const LiveRequestFrame({required super.sid});
+  @override
+  String get type => 'live_request';
+  @override
+  Map<String, Object?> fieldsToJson() => {'sid': sid};
+}
+
+/// Camera owner → viewer: agreed, and the camera is on; frames follow.
+class LiveAcceptFrame extends RelayedFrame {
+  const LiveAcceptFrame({required super.sid});
+  @override
+  String get type => 'live_accept';
+  @override
+  Map<String, Object?> fieldsToJson() => {'sid': sid};
+}
+
+/// Viewer → camera owner: withdraws the request, or closes the view. The
+/// owner's camera goes off.
+class LiveStopFrame extends RelayedFrame {
+  const LiveStopFrame({required super.sid});
+  @override
+  String get type => 'live_stop';
+  @override
+  Map<String, Object?> fieldsToJson() => {'sid': sid};
+}
+
+/// Why a camera owner ends a view ([LiveEndFrame.reason]).
+abstract final class LiveEndReason {
+  static const declined = 'declined';
+  static const stopped = 'stopped';
+  static const unavailable = 'unavailable';
+  static const all = {declined, stopped, unavailable};
+}
+
+/// Camera owner → viewer: refused the request, or stopped sharing.
+class LiveEndFrame extends RelayedFrame {
+  const LiveEndFrame({required super.sid, required this.reason});
+
+  /// One of [LiveEndReason].
+  final String reason;
+  @override
+  String get type => 'live_end';
+  @override
+  Map<String, Object?> fieldsToJson() => {'sid': sid, 'reason': reason};
+}
+
+/// Camera owner → viewer: frame [n] (from 1), a base64 JPEG.
+class LiveVideoFrame extends RelayedFrame {
+  const LiveVideoFrame({
+    required super.sid,
+    required this.n,
+    required this.data,
+    this.sentAt,
+  });
+  final int n;
+  final String data;
+
+  /// When it left, in milliseconds of the owner's own clock: lets the viewer
+  /// show frames at a steady pace ([LivePacer]).
+  final int? sentAt;
+  @override
+  String get type => 'live_frame';
+  @override
+  Map<String, Object?> fieldsToJson() => {
+    'sid': sid,
+    'n': n,
+    'data': data,
+    'at': ?sentAt,
+  };
+}
+
+/// Viewer → camera owner: the longest side the view can use: small, or as much
+/// as possible in full screen.
+class LiveSizeFrame extends RelayedFrame {
+  const LiveSizeFrame({required super.sid, required this.side});
+  final int side;
+  @override
+  String get type => 'live_size';
+  @override
+  Map<String, Object?> fieldsToJson() => {'sid': sid, 'side': side};
+}
+
+/// Viewer → camera owner: frames up to [n] were handled (see [LiveFlow]).
+class LiveAckFrame extends RelayedFrame {
+  const LiveAckFrame({required super.sid, required this.n});
+  final int n;
+  @override
+  String get type => 'live_ack';
+  @override
+  Map<String, Object?> fieldsToJson() => {'sid': sid, 'n': n};
 }
 
 /// Reacts to the bubble [ref] of the peer; an empty [emoji] removes it.
@@ -731,6 +853,24 @@ class _Reader {
     final value = json[key];
     if (value is! int || value < 1) {
       throw FrameFormatException('"$key" must be a positive integer');
+    }
+    return value;
+  }
+
+  /// An integer ≥ 0, or null when absent.
+  int? optionalCount(String key) {
+    final value = json[key];
+    if (value == null) return null;
+    if (value is! int || value < 0) {
+      throw FrameFormatException('"$key" must be a positive integer');
+    }
+    return value;
+  }
+
+  String liveEndReason() {
+    final value = str('reason');
+    if (!LiveEndReason.all.contains(value)) {
+      throw const FrameFormatException('"reason" invalid');
     }
     return value;
   }

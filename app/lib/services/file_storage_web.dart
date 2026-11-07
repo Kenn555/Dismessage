@@ -8,21 +8,25 @@ import 'file_storage.dart';
 
 FileStorage createFileStorage() => BrowserFileStorage();
 
-/// The browser's file chooser. Completes with null when cancelled (where
+/// The browser's file chooser. Completes with nothing when cancelled (where
 /// the browser reports it).
-Future<ChosenFile?> pickFile() {
-  final completer = Completer<ChosenFile?>();
-  final input = web.HTMLInputElement()..type = 'file';
+Future<List<ChosenFile>> pickFiles() {
+  final completer = Completer<List<ChosenFile>>();
+  final input = web.HTMLInputElement()
+    ..type = 'file'
+    ..multiple = true;
   input.onchange = (web.Event _) {
-    final file = input.files?.item(0);
-    if (!completer.isCompleted) {
-      completer.complete(file == null ? null : _BrowserChosenFile(file));
-    }
+    final chosen = input.files;
+    if (completer.isCompleted) return;
+    completer.complete([
+      for (var i = 0; i < (chosen?.length ?? 0); i++)
+        BrowserChosenFile(chosen!.item(i)!),
+    ]);
   }.toJS;
   input.addEventListener(
     'cancel',
     (web.Event _) {
-      if (!completer.isCompleted) completer.complete(null);
+      if (!completer.isCompleted) completer.complete(const []);
     }.toJS,
   );
   input.click();
@@ -30,8 +34,8 @@ Future<ChosenFile?> pickFile() {
 }
 
 /// Reads slices of the file: it is never loaded whole.
-class _BrowserChosenFile implements ChosenFile {
-  _BrowserChosenFile(this._file);
+class BrowserChosenFile implements ChosenFile {
+  BrowserChosenFile(this._file);
 
   final web.File _file;
 

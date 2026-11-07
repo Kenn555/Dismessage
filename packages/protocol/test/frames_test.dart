@@ -71,6 +71,13 @@ void main() {
       size: 1234567,
       reply: 'aaaabbbbccccdddd',
     ),
+    const LiveRequestFrame(sid: 'sid1'),
+    const LiveAcceptFrame(sid: 'sid1'),
+    const LiveStopFrame(sid: 'sid1'),
+    const LiveEndFrame(sid: 'sid1', reason: LiveEndReason.declined),
+    const LiveVideoFrame(sid: 'sid1', n: 7, data: '/9j/4AAQ', sentAt: 1234),
+    const LiveSizeFrame(sid: 'sid1', side: kLiveFullSide),
+    const LiveAckFrame(sid: 'sid1', n: 7),
     const FileAcceptFrame(sid: 'sid1', fid: '0011223344556677'),
     const FileCancelFrame(sid: 'sid1', fid: '0011223344556677'),
     const FileChunkFrame(
@@ -89,6 +96,26 @@ void main() {
 
   test('every frame type has a sample', () {
     expect(samples.map((f) => f.type).toSet(), hasLength(samples.length));
+  });
+
+  test('what is sent together keeps its group', () {
+    const file = FileOfferFrame(
+      sid: 'sid1',
+      fid: '0011223344556677',
+      name: 'groupe.zip',
+      size: 12,
+      group: 'aaaabbbbccccdddd',
+    );
+    const image = ImageOfferFrame(
+      sid: 'sid1',
+      img: '0011223344556677',
+      width: 4,
+      height: 3,
+      preview: 'AAAA',
+      group: 'aaaabbbbccccdddd',
+    );
+    expect((Frame.decode(file.encode()) as FileOfferFrame).group, file.group);
+    expect((Frame.decode(image.encode()) as ImageOfferFrame).group, image.group);
   });
 
   for (final frame in samples) {
@@ -203,6 +230,15 @@ void main() {
       'file size negative':
           '{"t":"file_offer","sid":"s","fid":"0011223344556677","name":"a","size":-1}',
       'file bad id': '{"t":"file_accept","sid":"s","fid":"../../x"}',
+      'file bad group':
+          '{"t":"file_offer","sid":"s","fid":"0011223344556677","name":"a","size":1,"group":"../x"}',
+      'live frame too large':
+          '{"t":"live_frame","sid":"s","n":1,"data":"${'A' * (kMaxLiveFrameDataLength + 1)}"}',
+      'live frame number': '{"t":"live_frame","sid":"s","n":0,"data":"AA=="}',
+      'live ack number': '{"t":"live_ack","sid":"s","n":-1}',
+      'live size': '{"t":"live_size","sid":"s","side":0}',
+      'live frame time': '{"t":"live_frame","sid":"s","n":1,"data":"AA==","at":-1}',
+      'live end reason': '{"t":"live_end","sid":"s","reason":"parce que"}',
       'chunk index negative':
           '{"t":"file_chunk","sid":"s","fid":"0011223344556677","i":-1,"data":"AA=="}',
       'chunk index beyond max file':

@@ -31,6 +31,7 @@ class MainActivity : FlutterActivity() {
         EngineHolder.voice?.activity = this
         EngineHolder.notifications?.activity = this
         EngineHolder.files?.activity = this
+        EngineHolder.camera?.activity = this
         if (EngineHolder.backgroundEnabled(this)) BackgroundService.start(this)
     }
 
@@ -60,6 +61,7 @@ class MainActivity : FlutterActivity() {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         EngineHolder.voice?.onPermissionResult(requestCode, grantResults)
         EngineHolder.notifications?.onPermissionResult(requestCode, grantResults)
+        EngineHolder.camera?.onPermissionResult(requestCode, grantResults)
     }
 
     override fun onDestroy() {
@@ -70,6 +72,10 @@ class MainActivity : FlutterActivity() {
             EngineHolder.notifications?.activity = null
         }
         if (EngineHolder.files?.activity === this) EngineHolder.files?.activity = null
+        if (EngineHolder.camera?.activity === this) {
+            EngineHolder.camera?.close()
+            EngineHolder.camera?.activity = null
+        }
         super.onDestroy()
     }
 }

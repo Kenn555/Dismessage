@@ -7,11 +7,13 @@ import 'package:flutter/foundation.dart';
 
 import 'file_storage.dart';
 import 'image_codec.dart';
+import 'live_camera.dart';
+import 'live_link.dart';
 
 /// One bubble of the conversation: a text, an image, a voice message or a
 /// file.
 sealed class ChatEntry {
-  ChatEntry({required this.id, required this.fromMe, this.replyTo})
+  ChatEntry({required this.id, required this.fromMe, this.replyTo, this.group})
     : at = DateTime.now();
 
   /// [EntryId] shared by both peers, to react or reply.
@@ -21,6 +23,10 @@ sealed class ChatEntry {
 
   /// ID of the bubble this one answers.
   final String? replyTo;
+
+  /// Shared by the images and files sent together: the receiver takes them
+  /// with a single validation.
+  final String? group;
 
   /// The single reaction on this bubble: the peer's on mine, mine on theirs.
   String? reaction;
@@ -62,6 +68,7 @@ class ChatImage extends ChatEntry {
     required this.status,
     required super.fromMe,
     super.replyTo,
+    super.group,
     this.bytes,
   });
 
@@ -116,6 +123,7 @@ class ChatFile extends ChatEntry {
     required this.size,
     required super.fromMe,
     super.replyTo,
+    super.group,
   });
 
   /// Sender's name (sanitized); see [saved] for the name on disk.
@@ -144,6 +152,9 @@ class _Upload {
   final ChosenFile source;
   final OutgoingTransfer transfer;
 
+  /// Accepted, and its chunks have started to leave.
+  bool started = false;
+
   /// Reads happen one after the other, in chunk order.
   Future<void> chain = Future.value();
 }
@@ -171,6 +182,12 @@ class RecordedVoice {
   final Duration duration;
 }
 
+/// Listeners told apart: the peer's typing changes far more often than the
+/// rest, and must not rebuild what it does not touch.
+class _Signal extends ChangeNotifier {
+  void fire() => notifyListeners();
+}
+
 /// One live conversation with a peer. Nothing is persisted.
 class ChatSession extends ChangeNotifier {
   ChatSession({
@@ -179,18 +196,36 @@ class ChatSession extends ChangeNotifier {
     required void Function(Frame frame) send,
     Random? random,
     FileStorage? files,
+    LiveCamera? Function()? createLiveCamera,
+    LiveImageDecoder? decodeLiveFrame,
+    int Function()? liveClock,
   }) : _send = send,
        _random = random ?? Random.secure(),
        _files = files,
-       _sender = DraftSender(sid);
+       _sender = DraftSender(sid) {
+    live = LiveLink(
+      sid: sid,
+      send: send,
+      createCamera: createLiveCamera,
+      decode: decodeLiveFrame,
+      clock: liveClock,
+    )..addListener(notifyListeners);
+  }
 
   final String sid;
   final String peer;
   final void Function(Frame frame) _send;
   final Random _random;
   FileStorage? _files;
+
+  /// The live camera view of this conversation, in both directions.
+  late final LiveLink live;
   final Map<String, _Upload> _uploads = {};
   final Map<String, _Download> _downloads = {};
+
+  /// The upload whose chunks are leaving: one at a time, so that a group of
+  /// files never crowds out live typing and the camera view.
+  String? _uploading;
   bool _disposed = false;
   final DraftSender _sender;
   final DraftState _remote = DraftState();
@@ -200,8 +235,82 @@ class ChatSession extends ChangeNotifier {
   bool _peerLeft = false;
   bool _viewing = false;
   int _unread = 0;
+  final _Signal _timeline = _Signal();
+  final _Signal _typing = _Signal();
+
+  /// Notifies when anything but the peer's typing changes (bubbles, states).
+  /// The session itself notifies for everything.
+  Listenable get timeline => _timeline;
+
+  /// Notifies when [remoteDraft] changes.
+  Listenable get typing => _typing;
+
+  @override
+  void notifyListeners() {
+    _timeline.fire();
+    _typing.fire();
+    super.notifyListeners();
+  }
+
+  /// Only the peer's typing changed.
+  void _notifyTyping() {
+    _typing.fire();
+    super.notifyListeners();
+  }
 
   List<ChatEntry> get messages => List.unmodifiable(_entries);
+
+  /// What the peer sent together under [group].
+  List<ChatEntry> inGroup(String group) => [
+    for (final entry in _entries)
+      if (entry.group == group) entry,
+  ];
+
+  /// Files from the peer waiting for my answer.
+  List<ChatFile> get pendingFiles => [
+    for (final entry in _entries)
+      if (entry is ChatFile &&
+          !entry.fromMe &&
+          entry.status == FileStatus.awaiting)
+        entry,
+  ];
+
+  /// Accepts every offer of [group]: its files are saved, its images opened.
+  /// One after the other: two files with the same name get different ones.
+  Future<void> acceptGroup(String group) async {
+    for (final entry in inGroup(group)) {
+      if (entry.fromMe) continue;
+      if (entry is ChatFile) await acceptFile(entry);
+      if (entry is ChatImage) openImage(entry);
+    }
+  }
+
+  /// Refuses the files of [group] still waiting, or stops those in progress.
+  void cancelGroup(String group) {
+    for (final entry in inGroup(group)) {
+      if (entry is ChatFile) cancelFile(entry);
+    }
+  }
+
+  /// Accepts every file waiting, and opens the images sent with them.
+  Future<void> acceptAllPending() async {
+    final groups = <String>{};
+    for (final file in pendingFiles) {
+      final group = file.group;
+      if (group == null) {
+        await acceptFile(file);
+      } else if (groups.add(group)) {
+        await acceptGroup(group);
+      }
+    }
+  }
+
+  /// Refuses every file waiting.
+  void declineAllPending() {
+    for (final file in pendingFiles) {
+      cancelFile(file);
+    }
+  }
 
   /// Whether this conversation is the one on screen.
   bool get viewing => _viewing;
@@ -220,6 +329,9 @@ class ChatSession extends ChangeNotifier {
 
   /// What the peer is typing right now.
   String get remoteDraft => _remote.text;
+
+  /// What I am typing (the chat's input, or the Windows overlay panel's).
+  String get localDraft => _sender.text;
 
   bool get peerLeft => _peerLeft;
 
@@ -271,7 +383,11 @@ class ChatSession extends ChangeNotifier {
 
   /// Offers an image: only its blurred preview leaves now; the full image
   /// is sent when the peer opens it.
-  ChatImage? sendImage(EncodedImage image, {ChatEntry? replyTo}) {
+  ChatImage? sendImage(
+    EncodedImage image, {
+    ChatEntry? replyTo,
+    String? group,
+  }) {
     if (_peerLeft) return null;
     final entry = ChatImage(
       id: _newId(),
@@ -282,6 +398,7 @@ class ChatSession extends ChangeNotifier {
       status: ImageStatus.sent,
       fromMe: true,
       replyTo: _known(replyTo?.id),
+      group: group,
     );
     _add(entry);
     _send(
@@ -292,10 +409,29 @@ class ChatSession extends ChangeNotifier {
         height: entry.height,
         preview: base64Encode(entry.preview),
         reply: entry.replyTo,
+        group: group,
       ),
     );
     notifyListeners();
     return entry;
+  }
+
+  /// Offers [images] and [files] in one go: the peer answers for all of them
+  /// with a single validation. Only the first one carries the reply.
+  void sendBatch({
+    List<EncodedImage> images = const [],
+    List<ChosenFile> files = const [],
+    ChatEntry? replyTo,
+  }) {
+    if (_peerLeft) return;
+    final group = images.length + files.length > 1 ? _newId() : null;
+    var reply = replyTo;
+    for (final image in images) {
+      if (sendImage(image, replyTo: reply, group: group) != null) reply = null;
+    }
+    for (final file in files) {
+      if (sendFile(file, replyTo: reply, group: group) != null) reply = null;
+    }
   }
 
   /// Sends a recorded voice message. Returns null if empty or too large.
@@ -328,7 +464,7 @@ class ChatSession extends ChangeNotifier {
 
   /// Offers [file] to the peer; nothing else leaves until they accept.
   /// Returns null if the conversation ended or the file is too large.
-  ChatFile? sendFile(ChosenFile file, {ChatEntry? replyTo}) {
+  ChatFile? sendFile(ChosenFile file, {ChatEntry? replyTo, String? group}) {
     if (_peerLeft || file.size < 0 || file.size > kMaxFileBytes) return null;
     final entry = ChatFile(
       id: _newId(),
@@ -336,6 +472,7 @@ class ChatSession extends ChangeNotifier {
       size: file.size,
       fromMe: true,
       replyTo: _known(replyTo?.id),
+      group: group,
     );
     _uploads[entry.id] = _Upload(file);
     _add(entry);
@@ -346,6 +483,7 @@ class ChatSession extends ChangeNotifier {
         name: entry.name,
         size: entry.size,
         reply: entry.replyTo,
+        group: group,
       ),
     );
     notifyListeners();
@@ -417,10 +555,22 @@ class ChatSession extends ChangeNotifier {
         if (_remote.applyOps(seq, ops) == DraftUpdate.needsResync) {
           _send(DraftResyncFrame(sid: sid));
         }
+        return _notifyTyping();
       case DraftSnapshotFrame(:final seq, :final text):
         _remote.applySnapshot(seq, text);
+        return _notifyTyping();
       case DraftClearFrame(:final seq):
         _remote.clear(seq);
+        return _notifyTyping();
+      case LiveRequestFrame() ||
+          LiveAcceptFrame() ||
+          LiveStopFrame() ||
+          LiveEndFrame() ||
+          LiveVideoFrame() ||
+          LiveAckFrame() ||
+          LiveSizeFrame():
+        // Notifies by itself, and only for a change of state: not per frame.
+        return live.receive(frame);
       case MessageCommitFrame(:final seq, :final text, :final mid):
         final committed = _remote.commit(seq, text);
         if (committed != null && !_byId.containsKey(mid)) {
@@ -449,6 +599,7 @@ class ChatSession extends ChangeNotifier {
             status: ImageStatus.blurred,
             fromMe: false,
             replyTo: _known(frame.reply),
+            group: frame.group,
           ),
         );
       case ImageRequestFrame(:final img):
@@ -491,6 +642,7 @@ class ChatSession extends ChangeNotifier {
             size: size,
             fromMe: false,
             replyTo: _known(frame.reply),
+            group: frame.group,
           ),
         );
       case FileAcceptFrame(:final fid):
@@ -499,7 +651,7 @@ class ChatSession extends ChangeNotifier {
         if (file is! ChatFile || upload == null) return;
         if (file.status != FileStatus.awaiting) return;
         file.status = FileStatus.transferring;
-        _pump(file, upload);
+        _startNextUpload();
       case FileChunkFrame(:final fid, :final index):
         final file = _byId[fid];
         final download = _downloads[fid];
@@ -557,7 +709,24 @@ class ChatSession extends ChangeNotifier {
       }
     }
     _stopTransfers();
+    live.onPeerLeft();
     notifyListeners();
+  }
+
+  /// The next accepted file starts once the previous one is finished.
+  void _startNextUpload() {
+    if (_uploading != null) return;
+    for (final MapEntry(key: id, value: upload) in _uploads.entries) {
+      final file = _byId[id];
+      if (file is ChatFile &&
+          file.status == FileStatus.transferring &&
+          !upload.started) {
+        upload.started = true;
+        _uploading = id;
+        _pump(file, upload);
+        return;
+      }
+    }
   }
 
   void _stopTransfers() {
@@ -654,6 +823,8 @@ class ChatSession extends ChangeNotifier {
           .catchError((_) {})
           .then((_) => upload.source.close())
           .catchError((_) {});
+      if (_uploading == file.id) _uploading = null;
+      if (!_disposed && !_peerLeft) _startNextUpload();
     }
     final download = _downloads.remove(file.id);
     if (download != null) {
@@ -707,6 +878,11 @@ class ChatSession extends ChangeNotifier {
     _disposed = true;
     _cancelFlush();
     _stopTransfers();
+    live
+      ..removeListener(notifyListeners)
+      ..dispose();
+    _timeline.dispose();
+    _typing.dispose();
     super.dispose();
   }
 }

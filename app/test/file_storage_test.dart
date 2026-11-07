@@ -3,7 +3,6 @@ import 'dart:typed_data';
 
 import 'package:dismessage/services/file_storage.dart';
 import 'package:dismessage/services/file_storage_io.dart';
-import 'package:dismessage/widgets/file_bubble.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {

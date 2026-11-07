@@ -71,7 +71,7 @@ void main() {
           contacts: contacts,
           pickImage: (source) async {
             picked.add(source);
-            return jpeg;
+            return [jpeg];
           },
           cameraAvailable: camera,
           createCamera: () => webcam,

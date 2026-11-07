@@ -4,6 +4,7 @@ import 'package:dismessage/services/chat_session.dart';
 import 'package:dismessage/services/connection_service.dart';
 import 'package:dismessage/services/contacts_service.dart';
 import 'package:dismessage/services/identity_service.dart';
+import 'package:dismessage/services/live_link.dart';
 import 'package:dismessage/services/notifications/chat_notifications.dart';
 import 'package:dismessage/services/notifications/system_notifier.dart';
 import 'package:dismessage_protocol/dismessage_protocol.dart';
@@ -144,6 +145,17 @@ void main() {
     expect(lines, hasLength(kNotificationMaxLines));
     expect(lines.last, 'm${kNotificationMaxLines + 2}');
     expect(lines.first, 'm3');
+  });
+
+  test('a request for my camera is notified, once, and answers nothing', () async {
+    notifications.appVisible = false;
+    await receive(const LiveRequestFrame(sid: 's1'));
+    expect(notifier.shown.single.lines.single, contains('caméra'));
+    expect(notifier.shown.single.alert, isTrue);
+    expect(session.live.share, LiveShare.asked);
+
+    await receive(const LiveRequestFrame(sid: 's1'));
+    expect(notifier.shown, hasLength(1));
   });
 
   test('images and voice messages have a short label', () async {

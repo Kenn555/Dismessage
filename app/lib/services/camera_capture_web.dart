@@ -11,15 +11,18 @@ import 'camera_capture.dart';
 /// Desktop browsers ignore the "camera" hint of a file input: show the
 /// webcam ourselves. Phone browsers open their own camera app through
 /// `image_picker`, which is better there.
-CameraCapture? createCameraCapture() {
+CameraCapture? createCameraCapture(String? deviceId) {
   final phone =
       defaultTargetPlatform == TargetPlatform.android ||
       defaultTargetPlatform == TargetPlatform.iOS;
-  return phone ? null : WebCameraCapture();
+  return phone ? null : WebCameraCapture(deviceId);
 }
 
 /// Webcam through `getUserMedia`, previewed in a `<video>` element.
 class WebCameraCapture implements CameraCapture {
+  WebCameraCapture(this._deviceId);
+
+  final String? _deviceId;
   static int _count = 0;
   final _viewType = 'dismessage-camera-${_count++}';
   web.MediaStream? _stream;
@@ -37,7 +40,10 @@ class WebCameraCapture implements CameraCapture {
           .getUserMedia(
             web.MediaStreamConstraints(
               video: {
-                'facingMode': 'user',
+                if (_deviceId case final id?)
+                  'deviceId': {'ideal': id}
+                else
+                  'facingMode': 'user',
                 'width': {'ideal': 1280},
                 'height': {'ideal': 720},
               }.jsify()!,

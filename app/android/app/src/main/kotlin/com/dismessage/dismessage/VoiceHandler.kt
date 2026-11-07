@@ -4,6 +4,8 @@ import android.Manifest
 import android.app.Activity
 import android.content.Context
 import android.content.pm.PackageManager
+import android.media.AudioDeviceInfo
+import android.media.AudioManager
 import android.media.MediaPlayer
 import android.media.MediaRecorder
 import android.os.Build
@@ -38,9 +40,14 @@ class VoiceHandler(
             when (call.method) {
                 "hasPermission" -> hasPermission(call.argument<Boolean>("request") ?: true, result)
                 "start" -> {
-                    startRecording(call.argument<String>("path")!!, call.argument<Int>("bitRate")!!)
+                    startRecording(
+                        call.argument<String>("path")!!,
+                        call.argument<Int>("bitRate")!!,
+                        call.argument<String>("device"),
+                    )
                     result.success(null)
                 }
+                "listInputs" -> result.success(listInputs())
                 "stop" -> result.success(stopRecording())
                 "cancel" -> {
                     cancelRecording()
@@ -97,7 +104,28 @@ class VoiceHandler(
         pendingPermission = null
     }
 
-    private fun startRecording(path: String, bitRate: Int) {
+    /** The microphones: the built-in ones, a headset, a USB or Bluetooth one. */
+    private fun listInputs(): List<Map<String, String>> {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P) return emptyList()
+        val audio = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        return audio.getDevices(AudioManager.GET_DEVICES_INPUTS)
+            .filter { it.type != AudioDeviceInfo.TYPE_TELEPHONY }
+            .map {
+                mapOf(
+                    "id" to it.id.toString(),
+                    "label" to (it.productName?.toString()?.ifBlank { null } ?: "Micro ${it.id}"),
+                )
+            }
+    }
+
+    private fun preferredInput(id: String?): AudioDeviceInfo? {
+        if (id == null || Build.VERSION.SDK_INT < Build.VERSION_CODES.P) return null
+        val audio = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        return audio.getDevices(AudioManager.GET_DEVICES_INPUTS)
+            .firstOrNull { it.id.toString() == id }
+    }
+
+    private fun startRecording(path: String, bitRate: Int, device: String?) {
         cancelRecording()
         val r = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             MediaRecorder(context)
@@ -113,6 +141,9 @@ class VoiceHandler(
             r.setAudioSamplingRate(16000)
             r.setAudioEncodingBitRate(bitRate)
             r.setOutputFile(path)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                preferredInput(device)?.let { r.setPreferredDevice(it) }
+            }
             r.prepare()
             r.start()
         } catch (e: Exception) {

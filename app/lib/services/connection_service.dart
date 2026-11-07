@@ -7,6 +7,8 @@ import 'package:web_socket_channel/web_socket_channel.dart';
 import 'chat_session.dart';
 import 'file_storage.dart';
 import 'identity_service.dart';
+import 'live_camera.dart';
+import 'live_link.dart';
 
 enum ServerStatus { offline, connecting, online }
 
@@ -88,14 +90,22 @@ class ConnectionService extends ChangeNotifier {
     this.reconnectDelay = const Duration(seconds: 2),
     this.connectTimeout = const Duration(seconds: kConnectTimeoutSeconds),
     FileStorage? fileStorage,
+    LiveCamera? Function()? createLiveCamera,
+    LiveImageDecoder? decodeLiveFrame,
     bool Function(String from)? acceptsRequestFrom,
   }) : _acceptsRequestFrom = acceptsRequestFrom,
        _identity = identity,
        _serverUri = serverUri,
        _connect = connect ?? WebSocketChannel.connect,
-       _fileStorage = fileStorage;
+       _fileStorage = fileStorage,
+       _createLiveCamera = createLiveCamera,
+       _decodeLiveFrame = decodeLiveFrame;
 
   final IdentityService _identity;
+
+  /// The camera shared in live views (the platform's when null).
+  final LiveCamera? Function()? _createLiveCamera;
+  final LiveImageDecoder? _decodeLiveFrame;
 
   /// Filters incoming chat requests (blocked IDs, "contacts only"): a
   /// refused one is dropped without answer, no dialog, no notification.
@@ -258,6 +268,13 @@ class ConnectionService extends ChangeNotifier {
   void reject(String from) {
     _send(ConnectRejectFrame(peer: from));
     _events.add(IncomingRequestAnsweredEvent(from));
+  }
+
+  /// The app is no longer on screen: no camera stays on unseen.
+  void stopSharedCameras() {
+    for (final session in _sessions.values) {
+      session.live.onAppHidden();
+    }
   }
 
   /// Closes [session] (the peer is notified if still there). The most
@@ -551,6 +568,8 @@ class ConnectionService extends ChangeNotifier {
       peer: peer,
       send: (frame) => _sendInSession(sid, frame),
       files: _fileStorage,
+      createLiveCamera: _createLiveCamera,
+      decodeLiveFrame: _decodeLiveFrame,
     );
     secure.handshake = Timer(const Duration(seconds: kE2eHandshakeSeconds), () {
       if (_sessions[sid] != session || secure.e2e.isReady) return;

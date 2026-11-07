@@ -3,23 +3,7 @@
 #include <optional>
 
 #include "flutter/generated_plugin_registrant.h"
-
-#ifndef WDA_EXCLUDEFROMCAPTURE
-#define WDA_EXCLUDEFROMCAPTURE 0x00000011
-#endif
-
-namespace {
-
-// Keeps conversations out of screenshots and screen recordings: the window
-// is left out of captures (Windows 10 2004+), or shown black in them on older
-// versions.
-void ExcludeFromCapture(HWND window) {
-  if (!::SetWindowDisplayAffinity(window, WDA_EXCLUDEFROMCAPTURE)) {
-    ::SetWindowDisplayAffinity(window, WDA_MONITOR);
-  }
-}
-
-}  // namespace
+#include "utils.h"
 
 FlutterWindow::FlutterWindow(const flutter::DartProject& project)
     : project_(project) {}
@@ -45,6 +29,12 @@ bool FlutterWindow::OnCreate() {
   RegisterPlugins(flutter_controller_->engine());
   notifications_ = std::make_unique<Notifications>(
       flutter_controller_->engine()->messenger(), GetHandle());
+  clipboard_ = std::make_unique<ClipboardImages>(
+      flutter_controller_->engine()->messenger());
+  overlay_ = std::make_unique<Overlay>(
+      flutter_controller_->engine()->messenger(), GetHandle());
+  live_camera_ = std::make_unique<LiveCamera>(
+      flutter_controller_->engine()->messenger(), GetHandle());
   SetChildContent(flutter_controller_->view()->GetNativeWindow());
 
   flutter_controller_->engine()->SetNextFrameCallback([&]() {
@@ -61,6 +51,9 @@ bool FlutterWindow::OnCreate() {
 
 void FlutterWindow::OnDestroy() {
   notifications_ = nullptr;
+  clipboard_ = nullptr;
+  overlay_ = nullptr;
+  live_camera_ = nullptr;
   if (flutter_controller_) {
     flutter_controller_ = nullptr;
   }
@@ -83,6 +76,12 @@ FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
   }
 
   if (notifications_ && notifications_->HandleWindowMessage(message, lparam)) {
+    return 0;
+  }
+  if (overlay_ && overlay_->HandleWindowMessage(message, wparam)) {
+    return 0;
+  }
+  if (live_camera_ && live_camera_->HandleWindowMessage(message)) {
     return 0;
   }
 

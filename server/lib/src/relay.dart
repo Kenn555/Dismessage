@@ -25,6 +25,9 @@ class _Client {
   Set<String> watching = {};
 
   void send(Frame frame) => channel.sink.add(frame.encode());
+
+  /// A message already encoded, and checked by the relay.
+  void sendRaw(Object? message) => channel.sink.add(message);
 }
 
 class _Session {
@@ -141,6 +144,13 @@ class Relay {
     if (raw is String && raw.length > kMaxRawFrameLength) {
       return _error(client, 'too_large', 'Trame trop volumineuse');
     }
+    // A large encrypted frame: nothing to read in it but its session, and the
+    // recipient checks the rest. On a small server, decoding every image of a
+    // live view would take all the CPU, and images would leave in bursts.
+    if (raw is String && raw.length >= _fastPathLength && raw.endsWith('"}')) {
+      final sid = _sealedHead.matchAsPrefix(raw)?.group(1);
+      if (sid != null) return _relaySealed(client, sid, raw);
+    }
     final Frame frame;
     try {
       frame = Frame.decode(raw);
@@ -148,13 +158,13 @@ class Relay {
       return _error(client, 'bad_frame', e.message);
     }
     try {
-      await _onFrame(client, frame);
+      await _onFrame(client, frame, raw);
     } catch (e) {
       _error(client, 'internal', 'Erreur interne');
     }
   }
 
-  Future<void> _onFrame(_Client client, Frame frame) async {
+  Future<void> _onFrame(_Client client, Frame frame, Object? raw) async {
     switch (frame) {
       case PingFrame():
         client.send(const PongFrame());
@@ -188,7 +198,7 @@ class Relay {
       case SessionLeaveFrame(:final sid):
         _leave(client, sid);
       case KeyOfferFrame() || SealedFrame():
-        _relay(client, frame as RelayedFrame);
+        _relay(client, frame as RelayedFrame, raw);
       case RelayedFrame():
         // Conversations are end-to-end encrypted: nothing else passes.
         _error(client, 'unencrypted', 'Trame non chiffrée refusée');
@@ -339,13 +349,26 @@ class Relay {
     }
   }
 
-  void _relay(_Client client, RelayedFrame frame) {
+  /// From this length, a `sealed` frame is not decoded by the relay.
+  static const _fastPathLength = 2048;
+
+  /// The start of a `sealed` frame, as `Frame.encode` writes it.
+  static final _sealedHead = RegExp(
+    r'\{"t":"sealed","sid":"([^"\\]{1,128})","n":[0-9]{1,16},"data":"',
+  );
+
+  void _relay(_Client client, RelayedFrame frame, Object? raw) =>
+      _relaySealed(client, frame.sid, raw);
+
+  /// Passes on the message as received: encoding it again would cost as much
+  /// as decoding it, for every image of a live view.
+  void _relaySealed(_Client client, String sid, Object? raw) {
     final me = client.id;
-    final session = _sessions[frame.sid];
+    final session = _sessions[sid];
     if (me == null || session == null || !session.involves(me)) {
       return _error(client, 'unknown_session', 'Session inconnue');
     }
-    _online[session.other(me)]?.send(frame);
+    _online[session.other(me)]?.sendRaw(raw);
   }
 
   void _leave(_Client client, String sid) {

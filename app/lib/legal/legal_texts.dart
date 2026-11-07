@@ -17,7 +17,7 @@ const kLegalContact = 'kennkerenbezara@gmail.com';
 const kMinimumAge = 18;
 
 /// Last change of these texts, shown in them.
-const kLegalUpdated = '8 octobre 2026';
+const kLegalUpdated = '6 novembre 2026';
 
 /// Accepted at first launch; a new value asks users to accept again.
 const kTermsVersion = '2026-10-08';
@@ -109,7 +109,8 @@ const privacyPolicy = LegalDocument(
           'web) :',
       '- votre ID Dismessage et le secret qui prouve qu’il vous appartient ;',
       '- vos contacts (un ID et le nom que vous leur donnez, jamais de '
-          'message), vos IDs bloqués et vos réglages ;',
+          'message), vos IDs bloqués et vos réglages, dont la caméra et le '
+          'micro choisis ;',
       '- l’adresse du serveur utilisé et votre acceptation des présentes '
           'conditions ;',
       '- les fichiers que vous acceptez de recevoir, enregistrés dans vos '
@@ -130,7 +131,8 @@ const privacyPolicy = LegalDocument(
           'vos contacts quand l’accueil affiche s’ils sont en ligne ; en '
           'mémoire seulement, le temps de la connexion.',
       'Le contenu des conversations (texte, frappe en direct, réactions, '
-          'photos, vocaux, fichiers) est chiffré de bout en bout sur votre '
+          'photos, vocaux, fichiers, images de la vue caméra) est chiffré de '
+          'bout en bout sur votre '
           'appareil : le serveur ne transmet que des données illisibles, et '
           'n’en garde rien. Seuls les deux participants détiennent les clés, '
           'créées pour chaque conversation puis oubliées.',
@@ -157,7 +159,16 @@ const privacyPolicy = LegalDocument(
     LegalSection('Autorisations demandées', [
       'Appareil photo, micro, photos et fichiers ne sont utilisés qu’au '
           'moment où vous prenez une photo, enregistrez un vocal ou choisissez '
-          'un fichier à envoyer. Les notifications servent à vous prévenir des '
+          'un fichier à envoyer. La vue caméra en direct ne démarre qu’après '
+          'votre accord, demandé à chaque fois : votre interlocuteur ne peut '
+          'jamais allumer votre caméra seul. Tant qu’elle est allumée, '
+          'l’application l’indique ; vous pouvez l’arrêter à tout moment, et '
+          'elle s’arrête si l’application est réduite ou passe en arrière-plan. '
+          'Dismessage n’enregistre ni ne conserve ses images, ni sur les '
+          'appareils ni sur le serveur ; votre interlocuteur peut toutefois '
+          'les capturer par ses propres moyens (navigateur, autre appareil). '
+          'Le presse-papiers n’est lu qu’au moment où vous collez dans une '
+          'conversation. Les notifications servent à vous prévenir des '
           'messages et demandes quand l’application n’est pas à l’écran ; '
           'elles sont produites par votre appareil, sans service de '
           'notification extérieur.',

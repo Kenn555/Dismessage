@@ -16,10 +16,18 @@ class LiveDraftBubble extends StatefulWidget {
     super.key,
     required this.text,
     this.pauseDelay = const Duration(milliseconds: kPauseDotsMs),
+    this.style,
+    this.framed = true,
   });
 
   final String text;
   final Duration pauseDelay;
+
+  /// Text style; the received bubbles' by default.
+  final TextStyle? style;
+
+  /// In a bubble; false shows the bare text (Windows overlay panel).
+  final bool framed;
 
   /// Fade-in duration of a new character.
   static const fadeDuration = Duration(milliseconds: 120);
@@ -180,9 +188,29 @@ class _LiveDraftBubbleState extends State<LiveDraftBubble>
   Widget build(BuildContext context) {
     if (_text.isEmpty) return const SizedBox.shrink();
     final scheme = Theme.of(context).colorScheme;
-    final style = Theme.of(
-      context,
-    ).textTheme.bodyLarge!.copyWith(color: scheme.onSurfaceVariant);
+    final style =
+        widget.style ??
+        Theme.of(
+          context,
+        ).textTheme.bodyLarge!.copyWith(color: scheme.onSurfaceVariant);
+    final text = Text.rich(
+      key: const Key('live-draft-text'),
+      TextSpan(
+        style: style,
+        children: [
+          ..._textSpans(style),
+          if (_paused)
+            WidgetSpan(
+              alignment: PlaceholderAlignment.middle,
+              child: Padding(
+                padding: const EdgeInsets.only(left: 3),
+                child: TypingDots(color: style.color),
+              ),
+            ),
+        ],
+      ),
+    );
+    if (!widget.framed) return text;
     return Align(
       alignment: Alignment.centerLeft,
       child: Container(
@@ -202,23 +230,7 @@ class _LiveDraftBubbleState extends State<LiveDraftBubble>
             color: scheme.outlineVariant.withValues(alpha: 0.7),
           ),
         ),
-        child: Text.rich(
-          key: const Key('live-draft-text'),
-          TextSpan(
-            style: style,
-            children: [
-              ..._textSpans(style),
-              if (_paused)
-                WidgetSpan(
-                  alignment: PlaceholderAlignment.middle,
-                  child: Padding(
-                    padding: const EdgeInsets.only(left: 3),
-                    child: TypingDots(color: style.color),
-                  ),
-                ),
-            ],
-          ),
-        ),
+        child: text,
       ),
     );
   }

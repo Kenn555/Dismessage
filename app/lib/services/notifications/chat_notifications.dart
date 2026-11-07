@@ -5,6 +5,7 @@ import 'package:dismessage_protocol/dismessage_protocol.dart';
 import '../chat_session.dart';
 import '../connection_service.dart';
 import '../contacts_service.dart';
+import '../live_link.dart';
 import 'system_notifier.dart';
 
 /// Notifies messages and typing the user cannot see, and sends the replies
@@ -183,6 +184,9 @@ class _SessionNotice {
   /// Unread messages, oldest first (at most [kNotificationMaxLines]).
   final List<String> _unread = [];
 
+  /// The peer's request for my camera is already notified.
+  bool _cameraAsked = false;
+
   /// Typing already announced with a sound for the current burst.
   bool _typingAnnounced = false;
   String _shownDraft = '';
@@ -203,7 +207,20 @@ class _SessionNotice {
     final entries = session.messages;
     final fresh = entries.skip(_seen).where((e) => !e.fromMe).toList();
     _seen = entries.length;
+    // Answered in the conversation only: a notification never turns a camera
+    // on.
+    final cameraAsked = session.live.share == LiveShare.asked;
+    final askedNow = cameraAsked && !_cameraAsked;
+    _cameraAsked = cameraAsked;
     if (_owner._visible) return;
+
+    if (askedNow) {
+      _unread.add('📷 Demande à voir votre caméra');
+      while (_unread.length > kNotificationMaxLines) {
+        _unread.removeAt(0);
+      }
+      _show(alert: true);
+    }
 
     if (fresh.isNotEmpty) {
       for (final entry in fresh) {

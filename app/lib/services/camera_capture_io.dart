@@ -7,11 +7,16 @@ import 'package:flutter/widgets.dart';
 import 'camera_capture.dart';
 
 /// Windows only: Android takes photos through `image_picker`.
-CameraCapture? createCameraCapture() =>
-    Platform.isWindows ? WindowsCameraCapture() : null;
+CameraCapture? createCameraCapture(String? deviceId) =>
+    Platform.isWindows ? WindowsCameraCapture(deviceId) : null;
 
 /// Webcam through `camera_windows`.
 class WindowsCameraCapture implements CameraCapture {
+  WindowsCameraCapture(this._deviceId);
+
+  /// The device's symbolic link, part of the names `camera_windows` gives
+  /// ("Webcam <link>").
+  final String? _deviceId;
   int? _id;
   double _aspectRatio = 4 / 3;
 
@@ -32,8 +37,14 @@ class WindowsCameraCapture implements CameraCapture {
       throw const CameraCaptureException('Aucune webcam détectée.');
     }
     try {
+      final wanted = _deviceId;
       final id = _id = await _platform.createCameraWithSettings(
-        cameras.first,
+        wanted == null
+            ? cameras.first
+            : cameras.firstWhere(
+                (camera) => camera.name.contains(wanted),
+                orElse: () => cameras.first,
+              ),
         const MediaSettings(
           resolutionPreset: ResolutionPreset.high,
           enableAudio: false,

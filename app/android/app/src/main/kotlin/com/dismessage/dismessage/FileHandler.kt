@@ -115,6 +115,7 @@ class FileHandler(private val context: Context) : MethodChannel.MethodCallHandle
         val intent = Intent(Intent.ACTION_OPEN_DOCUMENT)
             .addCategory(Intent.CATEGORY_OPENABLE)
             .setType("*/*")
+            .putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
         try {
             screen.startActivityForResult(intent, PICK_REQUEST)
         } catch (e: ActivityNotFoundException) {
@@ -128,12 +129,14 @@ class FileHandler(private val context: Context) : MethodChannel.MethodCallHandle
         if (requestCode != PICK_REQUEST) return false
         val result = pendingPick ?: return true
         pendingPick = null
-        val uri = data?.data
-        if (resultCode != Activity.RESULT_OK || uri == null) {
-            result.success(null)
-            return true
+        // Several files come in the clip data, a single one in the data.
+        val clip = data?.clipData
+        val uris = when {
+            resultCode != Activity.RESULT_OK -> emptyList()
+            clip != null -> (0 until clip.itemCount).map { clip.getItemAt(it).uri }
+            else -> listOfNotNull(data?.data)
         }
-        background(result) { opened(uri) }
+        background(result) { uris.map { opened(it) } }
         return true
     }
 

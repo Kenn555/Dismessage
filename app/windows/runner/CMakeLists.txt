@@ -7,9 +7,12 @@ project(runner LANGUAGES CXX)
 #
 # Any new source files that you add to the application should be added here.
 add_executable(${BINARY_NAME} WIN32
+  "clipboard.cpp"
   "flutter_window.cpp"
+  "live_camera.cpp"
   "main.cpp"
   "notifications.cpp"
+  "overlay.cpp"
   "utils.cpp"
   "win32_window.cpp"
   "${FLUTTER_MANAGED_DIR}/generated_plugin_registrant.cc"
@@ -37,6 +40,8 @@ target_link_libraries(${BINARY_NAME} PRIVATE flutter flutter_wrapper_app)
 target_link_libraries(${BINARY_NAME} PRIVATE "dwmapi.lib")
 # C++/WinRT (toast notifications), from the Windows SDK.
 target_link_libraries(${BINARY_NAME} PRIVATE "WindowsApp.lib")
+# The live camera view: Media Foundation reads the webcam, WIC encodes.
+target_link_libraries(${BINARY_NAME} PRIVATE "mfplat.lib" "mf.lib" "mfreadwrite.lib" "mfuuid.lib" "windowscodecs.lib")
 target_include_directories(${BINARY_NAME} PRIVATE "${CMAKE_SOURCE_DIR}")
 
 # Run the Flutter tool portions of the build. This must not be removed.

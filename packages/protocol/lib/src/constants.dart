@@ -43,6 +43,10 @@ const int kMaxImageBytes = 600 * 1024;
 /// Longest side of the blurred preview sent before opening.
 const int kImagePreviewSide = 32;
 
+/// Images sent at once (chosen together or pasted); each leaves as its own
+/// `image_offer`.
+const int kMaxImagesPerSend = 10;
+
 /// Maximum base64 length of an image preview.
 const int kMaxImagePreviewLength = 8 * 1024;
 
@@ -97,13 +101,90 @@ const int kFileWindowChunks = 4;
 /// Longest file name (UTF-16 code units).
 const int kMaxFileNameLength = 255;
 
+/// Files sent at once (chosen together or pasted). The receiver answers for
+/// all of them with a single validation.
+const int kMaxFilesPerSend = 20;
+
+/// A chosen or pasted image file larger than this goes as a plain file
+/// instead of being read whole to be shown in a bubble.
+const int kMaxImageFileBytes = 64 * 1024 * 1024;
+
+// Live camera view: small JPEG frames, encrypted like everything else. The
+// camera owner's explicit agreement is needed each time.
+
+/// Longest side of a live frame in the small view, in pixels: small, for 30
+/// images per second.
+const int kLiveMaxSide = 320;
+
+/// Longest side asked for in full screen: the camera's best, within this.
+const int kLiveFullSide = 1920;
+
+/// The sizes a live view moves through as the network allows, like video
+/// calls: the size gives way first, to keep the rate.
+const List<int> kLiveSideSteps = [320, 480, 640, 960, 1280, 1920];
+
+/// Where full screen starts, before the measured delay says more.
+const int kLiveFullStartSide = 960;
+
+/// Longest a received frame waits to be shown, to even out the network's
+/// irregularities: images at a steady pace rather than in bursts, like the
+/// playout buffer of video calls. Only used as far as the network needs it.
+const int kLiveMaxBufferMs = 300;
+
+/// Decoded frames waiting at most: beyond, the oldest are skipped.
+const int kLiveMaxHeldFrames = 12;
+
+/// What a live view aims for, in images per second.
+const int kLiveTargetFps = 30;
+
+/// Frames sent ahead of the viewer's acknowledgements, between these bounds
+/// (`LiveFlow.window` follows the distance to the relay). What cannot leave is
+/// skipped, not queued: the view stays current on a slow network, with fewer
+/// images rather than a growing delay.
+const int kLiveWindowFrames = 5;
+const int kLiveMaxWindowFrames = 45;
+
+/// JPEG quality of live frames: where it starts and between which values it
+/// follows the network.
+const int kLiveQualityStart = 45;
+const int kLiveQualityMin = 25;
+const int kLiveQualityMax = 70;
+
+/// Delay above the lowest measured that means frames are queueing: too heavy.
+/// Below [kLiveClearDelayMs] above it, the network has room to spare.
+const int kLiveQueueDelayMs = 120;
+const int kLiveClearDelayMs = 40;
+
+/// Unacknowledged frames older than this are given up (a stalled network).
+const int kLiveStallMs = 3000;
+
+/// Largest live frame, in bytes (larger: skipped, and the quality goes down).
+const int kMaxLiveFrameBytes = 384 * 1024;
+
+/// Maximum base64 length of a live frame.
+const int kMaxLiveFrameDataLength = (kMaxLiveFrameBytes + 2) ~/ 3 * 4;
+
+/// A received frame announcing a larger image is not decoded.
+const int kLiveMaxDecodedSide = 2560;
+
+/// The viewer stops waiting for an answer after this delay.
+const int kLiveRequestTimeoutSeconds = 60;
+
+/// After a refusal, new requests are refused at once for this long: a peer
+/// cannot flood the screen with prompts.
+const int kLiveDeclineCooldownSeconds = 10;
+
+/// The camera must give a frame within this delay, or the sharing stops.
+const int kLiveCameraTimeoutSeconds = 5;
+
 // Relay rate limits (token buckets: a burst, then a sustained rate). The
 // throughput ones slow a client down; the others refuse with `rate_limited`.
 
 /// Frames one connection can send at once, then per second (live typing
-/// sends one every [kDraftBatchMs]).
-const int kRateFramesBurst = 300;
-const int kRateFramesPerSecond = 100;
+/// sends one every [kDraftBatchMs], a live view [kLiveTargetFps] images and as
+/// many acknowledgements).
+const int kRateFramesBurst = 400;
+const int kRateFramesPerSecond = 200;
 
 /// Characters of raw frames one connection can send at once, then per second.
 const int kRateBytesBurst = 16 * 1024 * 1024;

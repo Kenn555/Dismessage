@@ -9,6 +9,10 @@ import '../../services/background_mode.dart';
 import '../../services/chat_session.dart';
 import '../../services/connection_service.dart';
 import '../../services/contacts_service.dart';
+import '../../services/desktop_overlay.dart';
+import '../../services/live_fullscreen.dart';
+import '../../services/media_devices.dart';
+import '../../widgets/device_settings.dart';
 import '../../services/id_privacy.dart';
 import '../../services/link_opener.dart' show OpenLink;
 import '../../theme/app_theme.dart';
@@ -27,6 +31,9 @@ class HomeScreen extends StatefulWidget {
     required this.contacts,
     this.privacy,
     this.background,
+    this.overlay,
+    this.fullscreen,
+    this.devices,
     this.buildChat,
     this.openLink,
   });
@@ -40,6 +47,15 @@ class HomeScreen extends StatefulWidget {
 
   /// Android background mode; no settings button when null or unsupported.
   final BackgroundMode? background;
+
+  /// The Windows overlay panel; null elsewhere.
+  final DesktopOverlay? overlay;
+
+  /// The peer's camera in full screen.
+  final LiveFullscreen? fullscreen;
+
+  /// The camera and microphone chosen in the settings.
+  final DevicePreferences? devices;
 
   /// Builds a conversation screen (tests inject fake hardware).
   final ChatScreenBuilder? buildChat;
@@ -91,6 +107,9 @@ class _HomeScreenState extends State<HomeScreen> {
               connection: _connection,
               contacts: _contacts,
               privacy: _privacy,
+              overlay: widget.overlay,
+              fullscreen: widget.fullscreen,
+              devices: widget.devices,
               buildChat: widget.buildChat,
             ),
           ),
@@ -318,6 +337,10 @@ class _HomeScreenState extends State<HomeScreen> {
                   value: _contacts.contactsOnly,
                   onChanged: _contacts.setContactsOnly,
                 ),
+                if (widget.devices case final devices?) ...[
+                  const Divider(),
+                  DeviceSettings(devices: devices),
+                ],
                 const Divider(),
                 Padding(
                   padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),

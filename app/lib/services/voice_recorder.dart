@@ -40,11 +40,12 @@ abstract class VoiceRecorder {
   }
 }
 
-/// The recorder of the current platform.
-VoiceRecorder platformVoiceRecorder() =>
+/// The recorder of the current platform. [microphone] gives the device chosen
+/// in the settings, read at each recording; none: the system's default.
+VoiceRecorder platformVoiceRecorder({String? Function()? microphone}) =>
     !kIsWeb && defaultTargetPlatform == TargetPlatform.android
-    ? AndroidVoiceRecorder()
-    : PluginVoiceRecorder();
+    ? AndroidVoiceRecorder(microphone: microphone)
+    : PluginVoiceRecorder(microphone: microphone);
 
 const _permissionDenied = VoiceRecorderException(
   "Autorisez l'accès au micro pour envoyer un message vocal.",
@@ -53,6 +54,9 @@ const _permissionDenied = VoiceRecorderException(
 /// Android: MediaRecorder through our own channel (see `VoiceHandler.kt`),
 /// so the build needs no extra Gradle download. Always AAC in MP4.
 class AndroidVoiceRecorder implements VoiceRecorder {
+  AndroidVoiceRecorder({this.microphone});
+
+  final String? Function()? microphone;
   static const channel = MethodChannel('dismessage/voice');
   final _clock = Stopwatch();
 
@@ -69,6 +73,7 @@ class AndroidVoiceRecorder implements VoiceRecorder {
       await channel.invokeMethod<void>('start', {
         'path': await newVoicePath('m4a'),
         'bitRate': kVoiceBitRate,
+        'device': ?microphone?.call(),
       });
     } on PlatformException catch (e) {
       throw VoiceRecorderException('Micro indisponible : ${e.message}');
@@ -113,6 +118,9 @@ const _formats = <(AudioEncoder, String, String, int)>[
 
 /// Web and Windows: the `record` implementations, used directly.
 class PluginVoiceRecorder implements VoiceRecorder {
+  PluginVoiceRecorder({this.microphone});
+
+  final String? Function()? microphone;
   static int _count = 0;
   final _id = 'dismessage-recorder-${_count++}';
   final _clock = Stopwatch();
@@ -144,6 +152,7 @@ class PluginVoiceRecorder implements VoiceRecorder {
       await _platform.start(
         _id,
         RecordConfig(
+          device: await _chosenDevice(),
           encoder: encoder,
           bitRate: bitRate,
           sampleRate: encoder == AudioEncoder.wav ? 8000 : 16000,
@@ -157,6 +166,17 @@ class PluginVoiceRecorder implements VoiceRecorder {
     _clock
       ..reset()
       ..start();
+  }
+
+  /// The microphone chosen in the settings; unplugged since: the default.
+  Future<InputDevice?> _chosenDevice() async {
+    final wanted = microphone?.call();
+    if (wanted == null) return null;
+    final devices = await _platform.listInputDevices(_id);
+    for (final device in devices) {
+      if (device.id == wanted) return device;
+    }
+    return null;
   }
 
   Future<(AudioEncoder, String, String, int)?> _pickFormat() async {

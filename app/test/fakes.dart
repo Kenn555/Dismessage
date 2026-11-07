@@ -1,9 +1,12 @@
 import 'dart:async';
 import 'dart:typed_data';
 
+import 'package:dismessage/services/attachments.dart';
 import 'package:dismessage/services/camera_capture.dart';
 import 'package:dismessage/services/chat_session.dart';
+import 'package:dismessage/services/clipboard_images.dart';
 import 'package:dismessage/services/file_storage.dart';
+import 'package:dismessage/services/live_camera.dart';
 import 'package:dismessage/services/voice_player.dart';
 import 'package:dismessage/services/voice_recorder.dart';
 import 'package:dismessage_protocol/dismessage_protocol.dart';
@@ -174,6 +177,66 @@ class FakeAudioBackend implements AudioBackend {
     await _positions.close();
     await _completions.close();
   }
+}
+
+/// Clipboard driven by the test: [images] and [files] for Ctrl+V (Windows),
+/// [paste] for the browser's paste.
+class FakeClipboardImages implements ClipboardImages {
+  List<Uint8List> images = [];
+  List<ChosenFile> files = [];
+  final _pasted = StreamController<Attachments>.broadcast();
+
+  void paste(List<Uint8List> images, {List<ChosenFile> files = const []}) =>
+      _pasted.add(Attachments(images: images, files: files));
+
+  @override
+  bool get readsOnPasteKey => true;
+
+  @override
+  Future<Attachments> read() async =>
+      Attachments(images: images, files: files);
+
+  @override
+  Stream<Attachments> get pasted => _pasted.stream;
+}
+
+/// A camera driven by the test.
+class FakeLiveCamera implements LiveCamera {
+  FakeLiveCamera({this.failure});
+
+  /// Thrown by [open] (no camera, access refused…).
+  LiveCameraException? failure;
+
+  /// Thrown by [nextFrame] (the camera stopped).
+  LiveCameraException? frameFailure;
+  Uint8List frame = Uint8List.fromList([0xff, 0xd8, 0xff, 0xd9]);
+  bool opened = false;
+  bool closed = false;
+  final qualities = <int>[];
+  final sides = <int>[];
+  final captureSides = <int>[];
+
+  @override
+  Future<void> open() async {
+    final failure = this.failure;
+    if (failure != null) throw failure;
+    opened = true;
+  }
+
+  @override
+  Future<Uint8List?> nextFrame(int quality, int side) async {
+    final failure = frameFailure;
+    if (failure != null) throw failure;
+    qualities.add(quality);
+    sides.add(side);
+    return frame;
+  }
+
+  @override
+  Future<void> setCaptureSide(int side) async => captureSides.add(side);
+
+  @override
+  Future<void> close() async => closed = true;
 }
 
 /// Webcam driven by the test.

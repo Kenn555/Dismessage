@@ -666,6 +666,38 @@ void main() {
       expect(opened.text, 'Rendez-vous à 18 h');
     });
 
+    test('a large sealed frame passes untouched, without being decoded', () async {
+      final a = await (await client()).register(idA);
+      final b = await (await client()).register(idB);
+      final sid = await pair(a, b);
+      final data = 'QUJD' * 2000;
+      a.send(SealedFrame(sid: sid, n: 1, data: data));
+      final received = await b.expectNext<SealedFrame>();
+      expect(received.data, data);
+      expect(received.n, 1);
+      await a.expectSilence();
+    });
+
+    test('a large sealed frame cannot enter a session of others', () async {
+      final a = await (await client()).register(idA);
+      final b = await (await client()).register(idB);
+      final c = await (await client()).register(idC);
+      final sid = await pair(a, b);
+      c.send(SealedFrame(sid: sid, n: 1, data: 'QUJD' * 2000));
+      expect((await c.expectNext<ErrorFrame>()).code, 'unknown_session');
+      await a.expectSilence();
+      await b.expectSilence();
+    });
+
+    test('a large frame in clear is still refused', () async {
+      final a = await (await client()).register(idA);
+      final b = await (await client()).register(idB);
+      final sid = await pair(a, b);
+      a.send(ImageDataFrame(sid: sid, img: '0011223344556677', data: 'QUJD' * 2000));
+      expect((await a.expectNext<ErrorFrame>()).code, 'unencrypted');
+      await b.expectSilence();
+    });
+
     test('a third party cannot inject into a session', () async {
       final a = await (await client()).register(idA);
       final b = await (await client()).register(idB);

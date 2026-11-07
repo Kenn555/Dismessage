@@ -1,9 +1,12 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <!-- Required to reach the relay server in release builds. -->
     <uses-permission android:name="android.permission.INTERNET"/>
-    <!-- Voice messages. Photos use the camera app through an intent, so no
-         CAMERA permission (declaring it would make that intent fail). -->
+    <!-- Voice messages. -->
     <uses-permission android:name="android.permission.RECORD_AUDIO"/>
+    <!-- The live camera view, after the user agrees. Once declared, the camera
+         app's intent needs it too: image_picker asks for it before a photo. -->
+    <uses-permission android:name="android.permission.CAMERA"/>
+    <uses-feature android:name="android.hardware.camera" android:required="false"/>
     <!-- Notifications of messages and typing (asked at runtime, Android 13+). -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
     <!-- Background mode (optional, chosen in the app): stay connected with

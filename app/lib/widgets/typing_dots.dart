@@ -1,28 +1,47 @@
+import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 
 /// Three dots pulsing in turn, shown while the peer pauses.
+///
+/// A dozen steps per second are enough for the eye: at the screen's rate,
+/// this small animation would redraw the whole window for nothing, for as long
+/// as the peer pauses.
 class TypingDots extends StatefulWidget {
   const TypingDots({super.key, this.color, this.size = 5});
 
   final Color? color;
   final double size;
 
+  static const _period = Duration(milliseconds: 1200);
+  static const _step = Duration(milliseconds: 80);
+
   @override
   State<TypingDots> createState() => _TypingDotsState();
 }
 
-class _TypingDotsState extends State<TypingDots>
-    with SingleTickerProviderStateMixin {
-  late final AnimationController _controller = AnimationController(
-    vsync: this,
-    duration: const Duration(milliseconds: 1200),
-  )..repeat();
+class _TypingDotsState extends State<TypingDots> {
+  Timer? _timer;
+  int _ticks = 0;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // Stopped when the conversation is not on screen.
+    if (TickerMode.of(context)) {
+      _timer ??= Timer.periodic(TypingDots._step, (_) {
+        if (mounted) setState(() => _ticks++);
+      });
+    } else {
+      _timer?.cancel();
+      _timer = null;
+    }
+  }
 
   @override
   void dispose() {
-    _controller.dispose();
+    _timer?.cancel();
     super.dispose();
   }
 
@@ -32,25 +51,24 @@ class _TypingDotsState extends State<TypingDots>
         widget.color ?? DefaultTextStyle.of(context).style.color ?? Colors.grey;
     return Semantics(
       label: 'écrit…',
-      child: AnimatedBuilder(
-        animation: _controller,
-        builder: (context, _) => Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            for (var i = 0; i < 3; i++)
-              Padding(
-                padding: EdgeInsets.only(left: widget.size * 0.6),
-                child: _dot(color, _phase(i)),
-              ),
-          ],
-        ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          for (var i = 0; i < 3; i++)
+            Padding(
+              padding: EdgeInsets.only(left: widget.size * 0.6),
+              child: _dot(color, _phase(i)),
+            ),
+        ],
       ),
     );
   }
 
   /// 0..1 pulse, each dot shifted by a third of the cycle.
   double _phase(int index) {
-    final t = (_controller.value - index / 3) % 1.0;
+    final elapsed = _ticks * TypingDots._step.inMilliseconds;
+    final value = elapsed / TypingDots._period.inMilliseconds;
+    final t = (value - index / 3) % 1.0;
     return t < 0.5 ? math.sin(t * 2 * math.pi) : 0.0;
   }
 

@@ -90,6 +90,21 @@ abstract final class FileNames {
     caseSensitive: false,
   );
 
+  static const _imageExtensions = {
+    '.png',
+    '.jpg',
+    '.jpeg',
+    '.gif',
+    '.bmp',
+    '.webp',
+    '.tif',
+    '.tiff',
+  };
+
+  /// Whether [name] is that of a picture, shown as an image bubble.
+  static bool isImage(String name) =>
+      _imageExtensions.contains(split(name).$2.toLowerCase());
+
   /// Whether [name] is acceptable in a frame (before [sanitize]).
   static bool isValid(String name) =>
       name.isNotEmpty &&

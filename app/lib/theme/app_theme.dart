@@ -27,6 +27,32 @@ abstract final class AppTheme {
   /// "Online" dots: the relay, a contact, a live conversation.
   static const online = Color(0xFF10B981);
 
+  /// Windows overlay panel: translucent dark ground fading out on the left
+  /// and right (the window shows its transparent pixels), the peer in white,
+  /// my typing in blue.
+  static const overlayBackground = Color(0xAD0B0B12);
+  static const overlayFade = LinearGradient(
+    colors: [
+      Color(0x000B0B12),
+      overlayBackground,
+      overlayBackground,
+      Color(0x000B0B12),
+    ],
+    stops: [0, 0.06, 0.94, 1],
+  );
+
+  /// A slight fade of the same ground at the top and bottom.
+  static const overlayFadeVertical = LinearGradient(
+    begin: Alignment.topCenter,
+    end: Alignment.bottomCenter,
+    colors: [Color(0x00FFFFFF), Colors.white, Colors.white, Color(0x00FFFFFF)],
+    stops: [0, 0.14, 0.86, 1],
+  );
+  static const overlayMine = Color(0xFF7FA6FF);
+
+  /// What asks for an answer in the overlay panel.
+  static const overlayPrompt = Color(0xFFFFD27F);
+
   static ThemeData light() => _build(Brightness.light);
   static ThemeData dark() => _build(Brightness.dark);
 

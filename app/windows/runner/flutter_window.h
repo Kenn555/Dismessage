@@ -6,7 +6,10 @@
 
 #include <memory>
 
+#include "clipboard.h"
+#include "live_camera.h"
 #include "notifications.h"
+#include "overlay.h"
 #include "win32_window.h"
 
 // A window that does nothing but host a Flutter view.
@@ -32,6 +35,15 @@ class FlutterWindow : public Win32Window {
 
   // Message and typing toasts ("dismessage/notify" channel).
   std::unique_ptr<Notifications> notifications_;
+
+  // Pictures pasted with Ctrl+V ("dismessage/clipboard" channel).
+  std::unique_ptr<ClipboardImages> clipboard_;
+
+  // The overlay panel and its shortcut ("dismessage/overlay" channel).
+  std::unique_ptr<Overlay> overlay_;
+
+  // The webcam for the live view ("dismessage/camera" channel).
+  std::unique_ptr<LiveCamera> live_camera_;
 };
 
 #endif  // RUNNER_FLUTTER_WINDOW_H_
