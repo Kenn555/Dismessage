@@ -48,7 +48,10 @@ sealed class Frame {
           secret: r.secret(),
           v: r.version(),
         ),
-        'registered' => RegisteredFrame(id: r.id('id')),
+        'registered' => RegisteredFrame(
+          id: r.id('id'),
+          sessions: r.sidList('sessions'),
+        ),
         'id_taken' => IdTakenFrame(id: r.id('id')),
         'release' => ReleaseFrame(id: r.id('id'), secret: r.secret()),
         'id_request' => const IdRequestFrame(),
@@ -64,6 +67,8 @@ sealed class Frame {
         ),
         'peer_offline' => PeerOfflineFrame(peer: r.id('peer')),
         'peer_left' => PeerLeftFrame(sid: r.str('sid')),
+        'peer_away' => PeerAwayFrame(sid: r.str('sid')),
+        'peer_back' => PeerBackFrame(sid: r.str('sid')),
         'session_leave' => SessionLeaveFrame(sid: r.str('sid')),
         'draft_ops' => DraftOpsFrame(
           sid: r.str('sid'),
@@ -138,18 +143,33 @@ sealed class Frame {
           fid: r.entryId('fid'),
           count: r.chunkIndex('n', last: FileChunks.count(kMaxFileBytes)),
         ),
-        'live_request' => LiveRequestFrame(sid: r.str('sid')),
-        'live_accept' => LiveAcceptFrame(sid: r.str('sid')),
+        'live_request' => LiveRequestFrame(
+          sid: r.str('sid'),
+          codecs: r.liveCodecs(),
+        ),
+        'live_accept' => LiveAcceptFrame(
+          sid: r.str('sid'),
+          codec: r.optionalLiveCodec('codec'),
+        ),
         'live_stop' => LiveStopFrame(sid: r.str('sid')),
-        'live_end' => LiveEndFrame(sid: r.str('sid'), reason: r.liveEndReason()),
+        'live_end' => LiveEndFrame(
+          sid: r.str('sid'),
+          reason: r.liveEndReason(),
+        ),
         'live_frame' => LiveVideoFrame(
           sid: r.str('sid'),
           n: r.positive('n'),
           data: r.base64('data', kMaxLiveFrameDataLength),
           sentAt: r.optionalCount('at'),
+          key: r.optionalBoolean('key') ?? false,
+          rotation: r.rotation(),
         ),
-        'live_size' => LiveSizeFrame(sid: r.str('sid'), side: r.positive('side')),
+        'live_size' => LiveSizeFrame(
+          sid: r.str('sid'),
+          side: r.positive('side'),
+        ),
         'live_ack' => LiveAckFrame(sid: r.str('sid'), n: r.positive('n')),
+        'live_key' => LiveKeyFrame(sid: r.str('sid')),
         'key_offer' => KeyOfferFrame(sid: r.str('sid'), key: r.publicKey()),
         'sealed' => SealedFrame(
           sid: r.str('sid'),
@@ -203,12 +223,19 @@ class RegisterFrame extends Frame {
 }
 
 class RegisteredFrame extends Frame {
-  const RegisteredFrame({required this.id});
+  const RegisteredFrame({required this.id, this.sessions = const []});
   final String id;
+
+  /// Conversations kept while the connection was lost, and resumed: the
+  /// frames that waited follow. The client's others are over.
+  final List<String> sessions;
   @override
   String get type => 'registered';
   @override
-  Map<String, Object?> fieldsToJson() => {'id': id};
+  Map<String, Object?> fieldsToJson() => {
+    'id': id,
+    if (sessions.isNotEmpty) 'sessions': sessions,
+  };
 }
 
 class IdTakenFrame extends Frame {
@@ -324,6 +351,25 @@ class PeerLeftFrame extends SessionFrame {
   const PeerLeftFrame({required super.sid});
   @override
   String get type => 'peer_left';
+  @override
+  Map<String, Object?> fieldsToJson() => {'sid': sid};
+}
+
+/// Server → client: the peer's connection dropped. The conversation is kept
+/// for [kSessionGraceSeconds]: what is sent meanwhile waits on the relay.
+class PeerAwayFrame extends SessionFrame {
+  const PeerAwayFrame({required super.sid});
+  @override
+  String get type => 'peer_away';
+  @override
+  Map<String, Object?> fieldsToJson() => {'sid': sid};
+}
+
+/// Server → client: the peer is back, the conversation goes on.
+class PeerBackFrame extends SessionFrame {
+  const PeerBackFrame({required super.sid});
+  @override
+  String get type => 'peer_back';
   @override
   Map<String, Object?> fieldsToJson() => {'sid': sid};
 }
@@ -636,20 +682,31 @@ class FileAckFrame extends RelayedFrame {
 /// Viewer → camera owner: asks to see the owner's camera. Nothing is filmed
 /// until the owner agrees ([LiveAcceptFrame]).
 class LiveRequestFrame extends RelayedFrame {
-  const LiveRequestFrame({required super.sid});
+  const LiveRequestFrame({required super.sid, this.codecs = const []});
+
+  /// Video codecs the viewer can decode ([kLiveCodecH264]…), besides JPEG
+  /// which every version shows. Empty for older versions.
+  final List<String> codecs;
   @override
   String get type => 'live_request';
   @override
-  Map<String, Object?> fieldsToJson() => {'sid': sid};
+  Map<String, Object?> fieldsToJson() => {
+    'sid': sid,
+    if (codecs.isNotEmpty) 'codecs': codecs,
+  };
 }
 
 /// Camera owner → viewer: agreed, and the camera is on; frames follow.
 class LiveAcceptFrame extends RelayedFrame {
-  const LiveAcceptFrame({required super.sid});
+  const LiveAcceptFrame({required super.sid, this.codec});
+
+  /// The video codec of the frames, one of [LiveRequestFrame.codecs]; null for
+  /// JPEG.
+  final String? codec;
   @override
   String get type => 'live_accept';
   @override
-  Map<String, Object?> fieldsToJson() => {'sid': sid};
+  Map<String, Object?> fieldsToJson() => {'sid': sid, 'codec': ?codec};
 }
 
 /// Viewer → camera owner: withdraws the request, or closes the view. The
@@ -682,13 +739,16 @@ class LiveEndFrame extends RelayedFrame {
   Map<String, Object?> fieldsToJson() => {'sid': sid, 'reason': reason};
 }
 
-/// Camera owner → viewer: frame [n] (from 1), a base64 JPEG.
+/// Camera owner → viewer: frame [n] (from 1), in base64: a JPEG, or an access
+/// unit of the codec chosen by [LiveAcceptFrame.codec].
 class LiveVideoFrame extends RelayedFrame {
   const LiveVideoFrame({
     required super.sid,
     required this.n,
     required this.data,
     this.sentAt,
+    this.key = false,
+    this.rotation = 0,
   });
   final int n;
   final String data;
@@ -696,6 +756,14 @@ class LiveVideoFrame extends RelayedFrame {
   /// When it left, in milliseconds of the owner's own clock: lets the viewer
   /// show frames at a steady pace ([LivePacer]).
   final int? sentAt;
+
+  /// Video: a key frame, which decoding can start from (the others need the
+  /// frames before them).
+  final bool key;
+
+  /// Video: clockwise degrees (0, 90, 180, 270) to turn the image by to show
+  /// it upright: a phone's camera is not turned by its encoder.
+  final int rotation;
   @override
   String get type => 'live_frame';
   @override
@@ -704,7 +772,19 @@ class LiveVideoFrame extends RelayedFrame {
     'n': n,
     'data': data,
     'at': ?sentAt,
+    if (key) 'key': true,
+    if (rotation != 0) 'rot': rotation,
   };
+}
+
+/// Viewer → camera owner: the next video frame should be a key frame (the
+/// view just opened again, or a frame could not be decoded).
+class LiveKeyFrame extends RelayedFrame {
+  const LiveKeyFrame({required super.sid});
+  @override
+  String get type => 'live_key';
+  @override
+  Map<String, Object?> fieldsToJson() => {'sid': sid};
 }
 
 /// Viewer → camera owner: the longest side the view can use: small, or as much
@@ -921,6 +1001,61 @@ class _Reader {
     final value = json[key];
     if (value is! bool) throw FrameFormatException('"$key" must be a boolean');
     return value;
+  }
+
+  bool? optionalBoolean(String key) => json[key] == null ? null : boolean(key);
+
+  static final _codecName = RegExp(r'^[a-z0-9]+$');
+
+  /// A codec name, or null when absent.
+  String? optionalLiveCodec(String key) {
+    final value = json[key];
+    if (value == null) return null;
+    if (value is! String ||
+        value.length > kMaxLiveCodecLength ||
+        !_codecName.hasMatch(value)) {
+      throw FrameFormatException('"$key" must be a codec name');
+    }
+    return value;
+  }
+
+  /// `codecs` of `live_request`: empty when absent (older versions).
+  List<String> liveCodecs() {
+    final value = json['codecs'];
+    if (value == null) return const [];
+    if (value is! List || value.length > kMaxLiveCodecs) {
+      throw const FrameFormatException('"codecs" must be a short list');
+    }
+    return [
+      for (var i = 0; i < value.length; i++)
+        _Reader({'c': value[i]}).optionalLiveCodec('c') ??
+            (throw const FrameFormatException('"codecs" must be names')),
+    ];
+  }
+
+  /// `rot` of `live_frame`: a quarter turn, 0 when absent.
+  int rotation() {
+    final value = json['rot'] ?? 0;
+    if (value is! int || value < 0 || value >= 360 || value % 90 != 0) {
+      throw const FrameFormatException('"rot" must be 0, 90, 180 or 270');
+    }
+    return value;
+  }
+
+  /// Session IDs, empty when absent.
+  List<String> sidList(String key) {
+    final value = json[key];
+    if (value == null) return const [];
+    if (value is! List || value.length > kMaxResumedSessions) {
+      throw FrameFormatException('"$key" must be a short list');
+    }
+    return [
+      for (final sid in value)
+        if (sid is String && sid.isNotEmpty && sid.length <= 128)
+          sid
+        else
+          throw FrameFormatException('"$key" contains an invalid session'),
+    ];
   }
 
   List<String> idList(String key) {

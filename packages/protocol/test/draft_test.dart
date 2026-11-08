@@ -26,6 +26,7 @@ DraftUpdate deliver(DraftState state, RelayedFrame frame) => switch (frame) {
   LiveEndFrame() ||
   LiveVideoFrame() ||
   LiveAckFrame() ||
+  LiveKeyFrame() ||
   LiveSizeFrame() ||
   ReactionFrame() ||
   KeyOfferFrame() ||

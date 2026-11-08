@@ -684,7 +684,9 @@ class _ChatScreenState extends State<ChatScreen> {
     List<ChatEntry> members,
     List<ChatFile> files,
   ) {
-    final waiting = files.where((f) => f.status == FileStatus.awaiting).toList();
+    final waiting = files
+        .where((f) => f.status == FileStatus.awaiting)
+        .toList();
     final blurred = members
         .whereType<ChatImage>()
         .where((i) => i.status == ImageStatus.blurred)
@@ -1083,6 +1085,7 @@ class _ChatScreenState extends State<ChatScreen> {
                     ),
                   ],
                 ),
+              if (_session.reconnecting) _reconnectingBar(context),
               if (_session.live.share == LiveShare.asked) _liveRequestBanner(),
               if (_session.live.share == LiveShare.starting ||
                   _session.live.share == LiveShare.sharing)
@@ -1250,6 +1253,42 @@ class _ChatScreenState extends State<ChatScreen> {
             ),
           ],
         ),
+      ),
+    );
+  }
+
+  /// A connection dropped, mine or the peer's: the conversation waits for it
+  /// (what is written leaves once it is back).
+  Widget _reconnectingBar(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final text = _session.meAway
+        ? 'Connexion perdue : reconnexion… Vos messages partiront à son retour.'
+        : '${widget.contacts.label(_session.peer)} a perdu la connexion : '
+              'en attente de son retour…';
+    return Container(
+      key: const Key('reconnecting-bar'),
+      width: double.infinity,
+      color: scheme.secondaryContainer,
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      child: Row(
+        children: [
+          SizedBox.square(
+            dimension: 14,
+            child: CircularProgressIndicator(
+              strokeWidth: 2,
+              color: scheme.onSecondaryContainer,
+            ),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              text,
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                color: scheme.onSecondaryContainer,
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }

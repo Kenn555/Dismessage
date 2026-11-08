@@ -15,7 +15,11 @@ import android.hardware.camera2.CameraManager
 import android.hardware.camera2.CaptureRequest
 import android.media.Image
 import android.media.ImageReader
+import android.media.MediaCodec
+import android.media.MediaCodecInfo
+import android.media.MediaFormat
 import android.os.Build
+import android.os.Bundle
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.Looper
@@ -27,10 +31,13 @@ import io.flutter.plugin.common.MethodChannel
 import java.io.ByteArrayOutputStream
 
 /**
- * The camera as a source of small JPEG frames for the live view, with the
- * platform APIs only (Camera2): no extra Gradle dependency. Channel
- * "dismessage/camera". Only a frame that was asked for is encoded, the
- * freshest one. Android cuts the camera of an app in the background.
+ * The camera as a source of frames for the live view, with the platform APIs
+ * only (Camera2, MediaCodec): no extra Gradle dependency. Channel
+ * "dismessage/camera". JPEG, or H.264 when both sides can: the sensor's
+ * images are encoded as they come, unturned, and the turn goes with each
+ * frame ("rot"), shown upright by the viewer. Only a frame that was asked for
+ * is encoded, the freshest one: the encoder only sees the images that leave.
+ * Android cuts the camera of an app in the background.
  */
 class LiveCameraHandler(private val context: Context) : MethodChannel.MethodCallHandler {
 
@@ -59,7 +66,32 @@ class LiveCameraHandler(private val context: Context) : MethodChannel.MethodCall
     /** The frame asked for; only touched on the camera's thread once set. */
     @Volatile private var wanted: Wanted? = null
 
-    private class Wanted(val quality: Int, val result: MethodChannel.Result)
+    private class Wanted(
+        val quality: Int,
+        val video: Boolean,
+        val kbps: Int,
+        val key: Boolean,
+        val preview: Boolean,
+        val result: MethodChannel.Result,
+    )
+
+    // The video encoder, on the camera's thread only.
+    private var encoder: MediaCodec? = null
+    private var encoderWidth = 0
+    private var encoderHeight = 0
+    private var encoderKbps = 0
+    private var encoderTime = 0L
+
+    /** The sequence header (SPS, PPS), given once: each key frame carries it. */
+    private var codecConfig: ByteArray? = null
+
+    /** Frames out of the encoder, not handed to Dart yet. */
+    private val encoded = ArrayDeque<Pair<ByteArray, Boolean>>()
+
+    /** Forcing a key frame did not work: a new encoder will. */
+    private var reopen = false
+
+    private val canEncode: Boolean by lazy { VideoHandler.hasCodec(encoder = true) }
 
     override fun onMethodCall(call: MethodCall, result: MethodChannel.Result) {
         when (call.method) {
@@ -69,6 +101,7 @@ class LiveCameraHandler(private val context: Context) : MethodChannel.MethodCall
                 open(result)
             }
             "list" -> result.success(list())
+            "encoders" -> result.success(if (canEncode) listOf("h264") else emptyList())
             "capture" -> {
                 side = call.argument<Int>("side") ?: 320
                 recapture()
@@ -80,7 +113,24 @@ class LiveCameraHandler(private val context: Context) : MethodChannel.MethodCall
                 } else {
                     // Only the latest request counts.
                     wanted?.result?.success(null)
-                    wanted = Wanted(call.argument<Int>("quality") ?: 50, result)
+                    val video = call.argument<String>("codec") == "h264"
+                    if (video) {
+                        // Encoded at the camera's size: a new size is a new
+                        // capture (rarely: the size follows the network slowly).
+                        val wantedSide = call.argument<Int>("side") ?: side
+                        if (wantedSide != side) {
+                            side = wantedSide
+                            recapture()
+                        }
+                    }
+                    wanted = Wanted(
+                        quality = call.argument<Int>("quality") ?: 50,
+                        video = video,
+                        kbps = (call.argument<Int>("kbps") ?: 700).coerceIn(50, 20000),
+                        key = call.argument<Boolean>("key") == true,
+                        preview = call.argument<Boolean>("preview") == true,
+                        result = result,
+                    )
                 }
             }
             "close" -> {
@@ -289,6 +339,26 @@ class LiveCameraHandler(private val context: Context) : MethodChannel.MethodCall
         image.use {
             val request = wanted ?: return
             wanted = null
+            if (request.video) {
+                val frame = try {
+                    encodeVideo(it, request)
+                } catch (e: Exception) {
+                    closeEncoder()
+                    // A capture replaced meanwhile (its image went with it):
+                    // the next one will do, from a key frame.
+                    val replaced = images !== reader
+                    main.post {
+                        if (replaced) {
+                            request.result.success(null)
+                        } else {
+                            request.result.error("encoder", e.message, null)
+                        }
+                    }
+                    return
+                }
+                main.post { request.result.success(frame) }
+                return
+            }
             val jpeg = try {
                 encode(it, request.quality)
             } catch (e: Exception) {
@@ -296,6 +366,215 @@ class LiveCameraHandler(private val context: Context) : MethodChannel.MethodCall
             }
             main.post { request.result.success(jpeg) }
         }
+    }
+
+    /**
+     * On the camera's thread: [image] into the H.264 encoder, and the frame
+     * that comes out (an encoder may give it with one image of delay: then the
+     * previous one). Null when none is out yet.
+     */
+    private fun encodeVideo(image: Image, request: Wanted): Map<String, Any>? {
+        // One left from before goes first: frames are never skipped once
+        // encoded, the next ones need them.
+        encoded.removeFirstOrNull()?.let { (data, key) ->
+            return videoFrame(data, key, image, request.preview)
+        }
+        var key = request.key || reopen
+        if (encoder == null || encoderWidth != image.width || encoderHeight != image.height || reopen) {
+            openEncoder(image.width, image.height, request.kbps)
+            key = true
+        }
+        reopen = false
+        val codec = encoder ?: return null
+        if (request.kbps != encoderKbps) {
+            encoderKbps = request.kbps
+            codec.setParameters(
+                Bundle().apply { putInt(MediaCodec.PARAMETER_KEY_VIDEO_BITRATE, request.kbps * 1000) },
+            )
+        }
+        if (key) {
+            codec.setParameters(
+                Bundle().apply { putInt(MediaCodec.PARAMETER_KEY_REQUEST_SYNC_FRAME, 0) },
+            )
+        }
+        val input = codec.dequeueInputBuffer(20_000)
+        if (input >= 0) {
+            val target = codec.getInputImage(input) ?: throw IllegalStateException("no input image")
+            for (plane in 0 until 3) {
+                val divisor = if (plane == 0) 1 else 2
+                copyPlane(
+                    image.planes[plane],
+                    target.planes[plane],
+                    image.width / divisor,
+                    image.height / divisor,
+                )
+            }
+            codec.queueInputBuffer(input, 0, image.width * image.height * 3 / 2, encoderTime, 0)
+            encoderTime += 33_333
+        }
+        drain(codec, 25_000)
+        val (data, isKey) = encoded.removeFirstOrNull() ?: return null
+        // A key frame was asked for and this one is not: try a new encoder.
+        if (key && !isKey) reopen = true
+        return videoFrame(data, isKey, image, request.preview)
+    }
+
+    private fun videoFrame(data: ByteArray, key: Boolean, image: Image, preview: Boolean): Map<String, Any> {
+        val frame = HashMap<String, Any>()
+        frame["data"] = data
+        frame["key"] = key
+        frame["rot"] = rotation()
+        if (preview) {
+            try {
+                frame["preview"] = previewJpeg(image)
+            } catch (e: Exception) {
+                // No thumbnail this time.
+            }
+        }
+        return frame
+    }
+
+    private fun videoFormat(width: Int, height: Int, kbps: Int, detailed: Boolean): MediaFormat =
+        MediaFormat.createVideoFormat(VideoHandler.MIME, width, height).apply {
+            setInteger(
+                MediaFormat.KEY_COLOR_FORMAT,
+                MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible,
+            )
+            setInteger(MediaFormat.KEY_BIT_RATE, kbps * 1000)
+            setInteger(MediaFormat.KEY_FRAME_RATE, 30)
+            setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 10)
+            if (detailed) {
+                // Baseline: no reordering, every decoder reads it.
+                setInteger(MediaFormat.KEY_PROFILE, MediaCodecInfo.CodecProfileLevel.AVCProfileBaseline)
+                setInteger(MediaFormat.KEY_LEVEL, MediaCodecInfo.CodecProfileLevel.AVCLevel4)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                    // The camera gives full range colours, as JPEG does.
+                    setInteger(MediaFormat.KEY_COLOR_RANGE, MediaFormat.COLOR_RANGE_FULL)
+                    setInteger(MediaFormat.KEY_COLOR_STANDARD, MediaFormat.COLOR_STANDARD_BT601_PAL)
+                }
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    setInteger(MediaFormat.KEY_LATENCY, 1)
+                }
+            }
+        }
+
+    private fun openEncoder(width: Int, height: Int, kbps: Int) {
+        closeEncoder()
+        val codec = MediaCodec.createEncoderByType(VideoHandler.MIME)
+        try {
+            codec.configure(videoFormat(width, height, kbps, true), null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+        } catch (e: Exception) {
+            // An encoder that refuses one of the details: the plain format.
+            codec.reset()
+            codec.configure(videoFormat(width, height, kbps, false), null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+        }
+        codec.start()
+        encoder = codec
+        encoderWidth = width
+        encoderHeight = height
+        encoderKbps = kbps
+        encoderTime = 0
+        codecConfig = null
+        encoded.clear()
+    }
+
+    /** What the encoder has finished, into [encoded]. */
+    private fun drain(codec: MediaCodec, firstWaitUs: Long) {
+        val info = MediaCodec.BufferInfo()
+        var wait = firstWaitUs
+        while (true) {
+            val output = codec.dequeueOutputBuffer(info, wait)
+            if (output == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) continue
+            if (output < 0) break
+            wait = 0
+            val buffer = codec.getOutputBuffer(output)
+            val bytes = ByteArray(info.size)
+            if (buffer != null) {
+                buffer.position(info.offset)
+                buffer.get(bytes, 0, info.size)
+            }
+            codec.releaseOutputBuffer(output, false)
+            if (info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG != 0) {
+                codecConfig = bytes
+                continue
+            }
+            if (bytes.isEmpty()) continue
+            val key = info.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME != 0
+            // A key frame carries the sequence header: decoding can start there.
+            val config = codecConfig
+            encoded.addLast(Pair(if (key && config != null) config + bytes else bytes, key))
+        }
+    }
+
+    private fun closeEncoder() {
+        try {
+            encoder?.stop()
+        } catch (e: Exception) {
+            // Already in error.
+        }
+        try {
+            encoder?.release()
+        } catch (e: Exception) {
+            // Already released.
+        }
+        encoder = null
+        encoded.clear()
+        codecConfig = null
+    }
+
+    /** One plane of a YUV 4:2:0 image into another, whatever their layouts. */
+    private fun copyPlane(from: Image.Plane, to: Image.Plane, width: Int, height: Int) {
+        val source = from.buffer
+        val target = to.buffer
+        if (from.pixelStride == 1 && to.pixelStride == 1) {
+            val row = ByteArray(width)
+            for (y in 0 until height) {
+                source.position(y * from.rowStride)
+                source.get(row, 0, width)
+                target.position(y * to.rowStride)
+                target.put(row, 0, width)
+            }
+            return
+        }
+        for (y in 0 until height) {
+            val sourceRow = y * from.rowStride
+            val targetRow = y * to.rowStride
+            for (x in 0 until width) {
+                target.put(targetRow + x * to.pixelStride, source.get(sourceRow + x * from.pixelStride))
+            }
+        }
+    }
+
+    /** A small JPEG of [image], unturned: my own thumbnail. */
+    private fun previewJpeg(image: Image): ByteArray {
+        // An even step keeps the colours (one sample for 2 x 2 pixels) aligned.
+        val step = maxOf(2, (maxOf(image.width, image.height) / 160) and 1.inv())
+        val width = (image.width / step) and 1.inv()
+        val height = (image.height / step) and 1.inv()
+        val out = ByteArray(width * height * 3 / 2)
+        val y = image.planes[0]
+        val u = image.planes[1]
+        val v = image.planes[2]
+        var position = 0
+        for (row in 0 until height) {
+            for (column in 0 until width) {
+                out[position++] = y.buffer.get(row * step * y.rowStride + column * step * y.pixelStride)
+            }
+        }
+        // A colour sample of the thumbnail covers 2 x 2 of its pixels, that is
+        // 2 step x 2 step of the image's, or step x step colour samples.
+        for (row in 0 until height / 2) {
+            for (column in 0 until width / 2) {
+                val sourceRow = row * step
+                val sourceColumn = column * step
+                out[position++] = v.buffer.get(sourceRow * v.rowStride + sourceColumn * v.pixelStride)
+                out[position++] = u.buffer.get(sourceRow * u.rowStride + sourceColumn * u.pixelStride)
+            }
+        }
+        val jpeg = ByteArrayOutputStream(8 * 1024)
+        YuvImage(out, ImageFormat.NV21, width, height, null)
+            .compressToJpeg(Rect(0, 0, width, height), 60, jpeg)
+        return jpeg.toByteArray()
     }
 
     private fun rotation(): Int {
@@ -398,6 +677,9 @@ class LiveCameraHandler(private val context: Context) : MethodChannel.MethodCall
         device = null
         reader?.close()
         reader = null
+        // The encoder belongs to the camera's thread: closed there, last.
+        val closing = handler
+        if (closing != null) closing.post { closeEncoder() } else closeEncoder()
         thread?.quitSafely()
         thread = null
         handler = null

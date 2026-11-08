@@ -4,7 +4,7 @@ import 'package:flutter/foundation.dart';
 import 'services/identity_service.dart';
 
 /// Shown in "À propos"; must match `version` in pubspec.yaml (tested).
-const kAppVersion = '0.4.0';
+const kAppVersion = '0.5.0';
 
 /// Source code, linked from "À propos".
 const kRepositoryUrl = 'https://github.com/Kenn555/Dismessage';

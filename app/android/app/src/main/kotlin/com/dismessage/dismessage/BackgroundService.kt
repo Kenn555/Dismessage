@@ -30,6 +30,8 @@ object EngineHolder {
     var files: FileHandler? = null
     var camera: LiveCameraHandler? = null
         private set
+    var video: VideoHandler? = null
+        private set
 
     fun get(context: Context): FlutterEngine {
         engine?.let { return it }
@@ -46,6 +48,9 @@ object EngineHolder {
         files = FileHandler(app).also { filesChannel.setMethodCallHandler(it) }
         val cameraChannel = MethodChannel(messenger, "dismessage/camera")
         camera = LiveCameraHandler(app).also { cameraChannel.setMethodCallHandler(it) }
+        // Decoded live video is drawn into textures of this engine.
+        val videoChannel = MethodChannel(messenger, "dismessage/video")
+        video = VideoHandler(created.renderer).also { videoChannel.setMethodCallHandler(it) }
         val backgroundChannel = MethodChannel(messenger, "dismessage/background")
         backgroundChannel.setMethodCallHandler { call, result ->
             when (call.method) {

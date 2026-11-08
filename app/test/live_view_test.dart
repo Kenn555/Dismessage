@@ -1,6 +1,7 @@
 import 'package:dismessage/config.dart';
 import 'package:dismessage/features/chat/chat_screen.dart';
 import 'package:dismessage/features/chat/overlay_panel.dart';
+import 'package:dismessage/services/live_video.dart';
 import 'package:dismessage/services/clipboard_images.dart';
 import 'package:dismessage/services/attachments.dart';
 import 'package:dismessage/services/chat_session.dart';
@@ -45,6 +46,7 @@ void main() {
       send: sent.add,
       createLiveCamera: () => camera,
       decodeLiveFrame: (_) async => null,
+      liveVideo: const NoLiveVideo(),
     );
     final connection = ConnectionService(
       identity: IdentityService(store),
@@ -116,6 +118,39 @@ void main() {
     expect(find.byKey(const Key('live-waiting')), findsNothing);
   });
 
+  testWidgets('a video texture is shown upright, in its proportions', (
+    tester,
+  ) async {
+    // A phone filming upright: 640 × 480 from its sensor, a quarter turn.
+    final picture = ValueNotifier<LivePicture?>(
+      const LivePicture.texture(7, width: 640, height: 480, rotation: 90),
+    );
+    addTearDown(picture.dispose);
+    expect(liveAspectRatio(picture.value), 480 / 640);
+    expect(liveAspectRatio(null), 4 / 3);
+    await tester.pumpWidget(
+      Center(
+        child: SizedBox(
+          width: 300,
+          height: 400,
+          child: LiveSurface(image: picture, fit: BoxFit.contain),
+        ),
+      ),
+    );
+    expect(tester.widget<Texture>(find.byType(Texture)).textureId, 7);
+    expect(tester.widget<RotatedBox>(find.byType(RotatedBox)).quarterTurns, 1);
+    // Fills the box, upright: 300 × 400.
+    final shown = tester.getRect(find.byType(RotatedBox));
+    expect(shown.width, closeTo(300, 0.5));
+    expect(shown.height, closeTo(400, 0.5));
+
+    // The same texture at another size: nothing else changes.
+    picture.value = const LivePicture.texture(7, width: 1280, height: 720);
+    await tester.pump();
+    expect(tester.widget<RotatedBox>(find.byType(RotatedBox)).quarterTurns, 0);
+    expect(tester.getRect(find.byType(RotatedBox)).width, closeTo(300, 0.5));
+  });
+
   testWidgets('the view is above the input, half as wide as the field', (
     tester,
   ) async {
@@ -179,7 +214,10 @@ void main() {
     await tester.pump();
     expect(fullscreen.active, isFalse);
     expect(
-      tester.widget<TextField>(find.byKey(const Key('chat-input'))).controller?.text,
+      tester
+          .widget<TextField>(find.byKey(const Key('chat-input')))
+          .controller
+          ?.text,
       'salut',
     );
   });

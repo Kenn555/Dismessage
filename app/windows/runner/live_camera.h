@@ -10,11 +10,13 @@
 #include <memory>
 #include <string>
 
-// The webcam as a source of small JPEG frames, for the live camera view
-// ("dismessage/camera" channel, LiveCamera in Dart). Media Foundation reads it
-// on a thread of its own; only a frame that was asked for is encoded (WIC), the
-// next one to come, so that a slow network costs no CPU and the camera sets
-// the pace.
+// The webcam as a source of frames for the live camera view
+// ("dismessage/camera" channel, LiveCamera in Dart): JPEG (WIC), or H.264
+// (video_codec.h) when both sides can. Media Foundation reads it on a thread
+// of its own; only a frame that was asked for is encoded, the next one to
+// come, so that a slow network costs no CPU and the camera sets the pace. The
+// video encoder only sees the images that leave: one skipped never breaks the
+// stream.
 class LiveCamera {
  public:
   LiveCamera(flutter::BinaryMessenger* messenger, HWND window);
@@ -31,7 +33,8 @@ class LiveCamera {
 
   // [device]: the camera chosen in the settings, empty for the first one.
   void Open(int side, std::string device, std::unique_ptr<Result> result);
-  void RequestFrame(int quality, std::unique_ptr<Result> result);
+  void RequestFrame(const struct Wanted& wanted,
+                    std::unique_ptr<Result> result);
   // Never waits for the thread: a camera that delivers nothing would freeze
   // the app. The thread ends by itself.
   void Close();

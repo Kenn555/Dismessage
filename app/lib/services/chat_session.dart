@@ -9,6 +9,7 @@ import 'file_storage.dart';
 import 'image_codec.dart';
 import 'live_camera.dart';
 import 'live_link.dart';
+import 'live_video.dart';
 
 /// One bubble of the conversation: a text, an image, a voice message or a
 /// file.
@@ -198,6 +199,7 @@ class ChatSession extends ChangeNotifier {
     FileStorage? files,
     LiveCamera? Function()? createLiveCamera,
     LiveImageDecoder? decodeLiveFrame,
+    LiveVideoCodecs? liveVideo,
     int Function()? liveClock,
   }) : _send = send,
        _random = random ?? Random.secure(),
@@ -208,6 +210,7 @@ class ChatSession extends ChangeNotifier {
       send: send,
       createCamera: createLiveCamera,
       decode: decodeLiveFrame,
+      video: liveVideo,
       clock: liveClock,
     )..addListener(notifyListeners);
   }
@@ -568,6 +571,7 @@ class ChatSession extends ChangeNotifier {
           LiveEndFrame() ||
           LiveVideoFrame() ||
           LiveAckFrame() ||
+          LiveKeyFrame() ||
           LiveSizeFrame():
         // Notifies by itself, and only for a change of state: not per frame.
         return live.receive(frame);
@@ -698,8 +702,35 @@ class ChatSession extends ChangeNotifier {
     notifyListeners();
   }
 
+  bool _meAway = false;
+  bool _peerAway = false;
+
+  /// My connection to the relay dropped: the conversation waits for it to
+  /// come back ([kSessionGraceSeconds]); what I send meanwhile leaves then.
+  bool get meAway => _meAway && !_peerLeft;
+
+  /// The peer's connection dropped: what I send waits on the relay.
+  bool get peerAway => _peerAway && !_peerLeft;
+
+  /// Either side is reconnecting.
+  bool get reconnecting => meAway || peerAway;
+
+  /// A dropped connection, mine ([me]) or the peer's: a live camera view
+  /// stops (nobody films unseen), the rest waits.
+  void setAway({bool? me, bool? peer}) {
+    if (_peerLeft) return;
+    final before = (_meAway, _peerAway);
+    final wasReconnecting = reconnecting;
+    if (me != null) _meAway = me;
+    if (peer != null) _peerAway = peer;
+    if (reconnecting && !wasReconnecting) live.onPeerLeft();
+    if ((_meAway, _peerAway) != before) notifyListeners();
+  }
+
   void markPeerLeft() {
     if (_peerLeft) return;
+    _meAway = false;
+    _peerAway = false;
     _peerLeft = true;
     _cancelFlush();
     _remote.clear(_remote.lastSeq + 1);

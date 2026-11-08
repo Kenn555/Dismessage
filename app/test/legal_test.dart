@@ -7,6 +7,7 @@ import 'package:dismessage/legal/legal_html.dart';
 import 'package:dismessage/legal/legal_texts.dart';
 import 'package:dismessage/services/identity_service.dart';
 import 'package:dismessage/services/legal_consent.dart';
+import 'package:dismessage_protocol/dismessage_protocol.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -29,6 +30,16 @@ void main() {
       expect(all(termsOfUse), contains('$kMinimumAge ans'));
       expect(all(privacyPolicy), contains('$kMinimumAge ans'));
     });
+
+    test(
+      'the policy says how long the relay keeps frames for an absent peer',
+      () {
+        final all = [
+          for (final s in privacyPolicy.sections) ...s.paragraphs,
+        ].join(' ');
+        expect(all, contains('$kSessionGraceSeconds secondes'));
+      },
+    );
 
     test('the publisher and both hosts are in the legal notice', () {
       final all = [

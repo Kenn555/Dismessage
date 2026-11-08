@@ -7,9 +7,12 @@ import 'package:dismessage/services/chat_session.dart';
 import 'package:dismessage/services/clipboard_images.dart';
 import 'package:dismessage/services/file_storage.dart';
 import 'package:dismessage/services/live_camera.dart';
+import 'package:dismessage/services/live_picture.dart';
+import 'package:dismessage/services/live_video.dart';
 import 'package:dismessage/services/voice_player.dart';
 import 'package:dismessage/services/voice_recorder.dart';
 import 'package:dismessage_protocol/dismessage_protocol.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
@@ -33,6 +36,14 @@ class RecordingSink implements WebSocketSink {
 /// opens one with a key exchange, [receiveSecure] seals what the peer says,
 /// [openedSent] decrypts what the app said.
 class ScriptedChannel implements WebSocketChannel {
+  ScriptedChannel();
+
+  /// A new connection of the same app, after [previous] was lost: the peers
+  /// and their keys are the same.
+  ScriptedChannel.after(ScriptedChannel previous) {
+    _peers.addAll(previous._peers);
+  }
+
   final server = StreamController<Object?>();
   @override
   final RecordingSink sink = RecordingSink();
@@ -193,8 +204,7 @@ class FakeClipboardImages implements ClipboardImages {
   bool get readsOnPasteKey => true;
 
   @override
-  Future<Attachments> read() async =>
-      Attachments(images: images, files: files);
+  Future<Attachments> read() async => Attachments(images: images, files: files);
 
   @override
   Stream<Attachments> get pasted => _pasted.stream;
@@ -216,6 +226,16 @@ class FakeLiveCamera implements LiveCamera {
   final sides = <int>[];
   final captureSides = <int>[];
 
+  /// Video codecs it encodes into (none: JPEG only).
+  Set<String> codecs = {};
+  final requests = <LiveFrameRequest>[];
+
+  /// Video: the next frames are deltas unless a key frame is asked for (the
+  /// first one always is, as with a new encoder).
+  bool _started = false;
+  int rotation = 0;
+  Uint8List preview = Uint8List.fromList([0xff, 0xd8, 0xff, 0xd9]);
+
   @override
   Future<void> open() async {
     final failure = this.failure;
@@ -224,12 +244,24 @@ class FakeLiveCamera implements LiveCamera {
   }
 
   @override
-  Future<Uint8List?> nextFrame(int quality, int side) async {
+  Future<Set<String>> encoders() async => codecs;
+
+  @override
+  Future<LiveCameraFrame?> nextFrame(LiveFrameRequest request) async {
     final failure = frameFailure;
     if (failure != null) throw failure;
-    qualities.add(quality);
-    sides.add(side);
-    return frame;
+    requests.add(request);
+    qualities.add(request.quality);
+    sides.add(request.side);
+    if (request.codec == null) return LiveCameraFrame(frame);
+    final key = request.key || !_started;
+    _started = true;
+    return LiveCameraFrame(
+      frame,
+      key: key,
+      rotation: rotation,
+      preview: request.preview ? preview : null,
+    );
   }
 
   @override
@@ -377,4 +409,61 @@ class FakeSavedFile implements SavedFile {
     shown++;
     return true;
   }
+}
+
+/// Video decoders driven by the test: each decoded frame shows as a texture
+/// (no image to create).
+class FakeLiveVideo implements LiveVideoCodecs {
+  FakeLiveVideo({Set<String>? codecs}) : codecs = codecs ?? {kLiveCodecH264};
+
+  Set<String> codecs;
+  final created = <FakeLiveVideoDecoder>[];
+
+  @override
+  Future<Set<String>> decoders() => SynchronousFuture(codecs);
+
+  @override
+  LiveVideoDecoder? create(String codec) {
+    if (!codecs.contains(codec)) return null;
+    final decoder = FakeLiveVideoDecoder(created.length + 1);
+    created.add(decoder);
+    return decoder;
+  }
+}
+
+class FakeLiveVideoDecoder implements LiveVideoDecoder {
+  FakeLiveVideoDecoder(this.texture);
+
+  final int texture;
+  final decoded = <({Uint8List data, bool key, int rotation})>[];
+  bool closed = false;
+
+  /// The next decode throws (a broken stream).
+  bool failNext = false;
+
+  /// Holds each decode until completed by the test, when set.
+  Completer<void>? gate;
+
+  @override
+  Future<LivePicture?> decode(
+    Uint8List data, {
+    required bool key,
+    required int rotation,
+  }) async {
+    await gate?.future;
+    if (failNext) {
+      failNext = false;
+      throw StateError('broken');
+    }
+    decoded.add((data: data, key: key, rotation: rotation));
+    return LivePicture.texture(
+      texture,
+      width: 640,
+      height: 480,
+      rotation: rotation,
+    );
+  }
+
+  @override
+  Future<void> close() async => closed = true;
 }

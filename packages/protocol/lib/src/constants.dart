@@ -1,6 +1,11 @@
 /// Protocol version this code speaks, sent in `register`. Raised when a
-/// change needs clients to update; 2 = IDs given and signed by the relay.
-const int kProtocolVersion = 2;
+/// change needs clients to update; 2 = IDs given and signed by the relay;
+/// 3 = conversations survive a short loss of connection (`peer_away`).
+const int kProtocolVersion = 3;
+
+/// First protocol version whose conversations are kept through a lost
+/// connection: the relay only keeps those of clients that can resume them.
+const int kResumableProtocolVersion = 3;
 
 /// Oldest client protocol version the relay accepts (older: refused with
 /// `update_required`). Raise it to retire old clients. 2: version 1 does
@@ -27,6 +32,21 @@ const int kMaxReconnectDelaySeconds = 30;
 
 /// Heartbeat interval between client and server.
 const int kHeartbeatSeconds = 20;
+
+/// How long the relay keeps the conversations of a client whose connection
+/// dropped (a tunnel, a phone changing networks…), and the client keeps them
+/// too: back within this delay, nothing is lost.
+const int kSessionGraceSeconds = 90;
+
+/// What the relay keeps for a client that is away, in characters of frames
+/// (a file transfer's window fits). More: the conversation ends.
+const int kAwayBufferLength = 4 * 1024 * 1024;
+
+/// What a client keeps to send once back, per conversation (characters).
+const int kOutboxLength = 4 * 1024 * 1024;
+
+/// Conversations listed in `registered` at most.
+const int kMaxResumedSessions = 64;
 
 /// Maximum length (UTF-16 code units) of a draft or message.
 const int kMaxTextLength = 10000;
@@ -109,7 +129,7 @@ const int kMaxFilesPerSend = 20;
 /// instead of being read whole to be shown in a bubble.
 const int kMaxImageFileBytes = 64 * 1024 * 1024;
 
-// Live camera view: small JPEG frames, encrypted like everything else. The
+// Live camera view: video or JPEG frames, encrypted like everything else. The
 // camera owner's explicit agreement is needed each time.
 
 /// Longest side of a live frame in the small view, in pixels: small, for 30
@@ -153,7 +173,56 @@ const int kLiveQualityMax = 70;
 /// Delay above the lowest measured that means frames are queueing: too heavy.
 /// Below [kLiveClearDelayMs] above it, the network has room to spare.
 const int kLiveQueueDelayMs = 120;
-const int kLiveClearDelayMs = 40;
+const int kLiveClearDelayMs = 60;
+
+/// Acknowledgements in a row above [kLiveQueueDelayMs] before the view gets
+/// lighter: one late frame (a relay that delivers in bursts) says little.
+/// [kLiveCongestedDelayMs] above the lowest delay is enough on its own.
+const int kLiveSlowAcksToLower = 3;
+const int kLiveCongestedDelayMs = 480;
+
+/// No slow acknowledgement for this long before the view gets richer.
+const int kLiveCalmMs = 1000;
+
+/// The lowest delay is the lowest measured over this period: a route that
+/// changed is noticed.
+const int kLiveRttMemoryMs = 60000;
+
+// Live view as video (H.264), when both sides can: only what changes from one
+// image to the next is sent, for the same quality 5 to 10 times lighter than
+// JPEG. The viewer offers what it can decode (`live_request.codecs`), the
+// camera owner chooses (`live_accept.codec`); JPEG otherwise.
+
+/// H.264, constrained baseline profile, Annex B access units.
+const String kLiveCodecH264 = 'h264';
+
+/// Codec names: short, lower case.
+const int kMaxLiveCodecLength = 16;
+const int kMaxLiveCodecs = 8;
+
+/// Longest side of the small view as video: video affords more than JPEG.
+const int kLiveVideoSmallSide = 640;
+
+/// Where full screen starts as video.
+const int kLiveVideoFullStartSide = 1280;
+
+/// Highest bitrate of each of [kLiveSideSteps], in kbit/s. Below a third of
+/// it, the size goes down.
+const List<int> kLiveMaxKbpsBySide = [400, 700, 1100, 1800, 3000, 5000];
+
+/// Bitrate at the start, small view and full screen, and the floor.
+const int kLiveStartKbps = 700;
+const int kLiveFullStartKbps = 2500;
+const int kLiveMinKbps = 150;
+
+/// A key frame at least this often (decoding can start from any of them);
+/// the viewer also asks for one when it needs it ([kLiveKeyRequestMs] apart).
+const int kLiveKeyIntervalSeconds = 10;
+const int kLiveKeyRequestMs = 1000;
+
+/// Received video frames waiting to be decoded at most: beyond, they are
+/// dropped and a key frame asked for.
+const int kLiveMaxQueuedFrames = 20;
 
 /// Unacknowledged frames older than this are given up (a stalled network).
 const int kLiveStallMs = 3000;

@@ -9,9 +9,8 @@ import '../services/desktop_overlay.dart';
 import '../services/live_fullscreen.dart';
 import '../services/live_link.dart';
 
-/// Width / height of [image], 4:3 until the first frame.
-double liveAspectRatio(ui.Image? image) =>
-    image == null || image.height == 0 ? 4 / 3 : image.width / image.height;
+/// Width / height of [picture] as shown, 4:3 until the first frame.
+double liveAspectRatio(LivePicture? picture) => picture?.aspectRatio ?? 4 / 3;
 
 /// The last frame of a camera. Only this repaints when a frame comes.
 class LiveSurface extends StatelessWidget {
@@ -22,7 +21,7 @@ class LiveSurface extends StatelessWidget {
     this.placeholder,
   });
 
-  final ValueListenable<ui.Image?> image;
+  final ValueListenable<LivePicture?> image;
   final BoxFit fit;
 
   /// Shown until the first frame.
@@ -33,17 +32,38 @@ class LiveSurface extends StatelessWidget {
     return RepaintBoundary(
       child: ColoredBox(
         color: Colors.black,
-        child: ValueListenableBuilder<ui.Image?>(
+        child: ValueListenableBuilder<LivePicture?>(
           valueListenable: image,
           builder: (context, frame, _) {
             if (frame == null) {
               return placeholder ?? const SizedBox.expand();
             }
+            // Smooth when enlarged (full screen): a sharper image than the
+            // nearest pixels.
+            final Widget content = switch (frame) {
+              LivePicture(:final ui.Image image) => RawImage(
+                image: image,
+                fit: BoxFit.fill,
+                filterQuality: FilterQuality.medium,
+              ),
+              LivePicture(:final int texture) => Texture(
+                textureId: texture,
+                filterQuality: FilterQuality.medium,
+              ),
+              _ => const SizedBox.shrink(),
+            };
             return SizedBox.expand(
-              child: RawImage(
-                image: frame,
+              child: FittedBox(
                 fit: fit,
-                filterQuality: FilterQuality.low,
+                clipBehavior: Clip.hardEdge,
+                child: RotatedBox(
+                  quarterTurns: frame.quarterTurns,
+                  child: SizedBox(
+                    width: frame.width.toDouble(),
+                    height: frame.height.toDouble(),
+                    child: content,
+                  ),
+                ),
               ),
             );
           },
@@ -62,7 +82,7 @@ class LiveViewCard extends StatelessWidget {
     this.onFullscreen,
   });
 
-  final ValueListenable<ui.Image?> image;
+  final ValueListenable<LivePicture?> image;
   final VoidCallback onClose;
   final VoidCallback? onFullscreen;
 
@@ -277,20 +297,20 @@ class _FullscreenView extends StatelessWidget {
                 ),
               ),
             Positioned(
-                top: 16,
-                right: 16,
-                child: SafeArea(
-                  // No tooltip: this is above the navigator and its overlay.
-                  child: Semantics(
-                    label: 'Quitter le plein écran',
-                    child: IconButton.filledTonal(
-                      key: const Key('live-fullscreen-exit'),
-                      icon: const Icon(Icons.fullscreen_exit_rounded),
-                      onPressed: onExit,
-                    ),
+              top: 16,
+              right: 16,
+              child: SafeArea(
+                // No tooltip: this is above the navigator and its overlay.
+                child: Semantics(
+                  label: 'Quitter le plein écran',
+                  child: IconButton.filledTonal(
+                    key: const Key('live-fullscreen-exit'),
+                    icon: const Icon(Icons.fullscreen_exit_rounded),
+                    onPressed: onExit,
                   ),
                 ),
               ),
+            ),
           ],
         ),
       ),

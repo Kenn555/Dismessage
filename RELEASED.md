@@ -4,6 +4,33 @@ Les nouveautés de chaque version de Dismessage, la plus récente en premier.
 
 ---
 
+## 0.5.0 — 9 novembre 2026
+
+### À lire avant de mettre à jour
+
+- La vue caméra en vidéo et la reprise après une coupure ne marchent que si **les deux** utilisateurs ont la version 0.5.0. Avec une version plus ancienne, tout continue de marcher comme avant.
+
+### Nouveautés
+
+- **Une petite coupure ne termine plus la conversation.** Si votre connexion (ou celle de votre interlocuteur) tombe un instant (tunnel, passage du Wi-Fi à la 4G, ordinateur en veille quelques secondes), la conversation reste ouverte avec un bandeau « Reconnexion… ». Vous pouvez continuer d'écrire : vos messages partent dès le retour de la connexion, et ceux de votre interlocuteur vous attendent. Sans retour au bout de 90 secondes, la conversation se termine comme avant. La vue caméra, elle, s'arrête pendant la coupure.
+
+### Sécurité et vie privée
+
+- Pendant une coupure de votre interlocuteur, ce que vous lui envoyez attend sur le serveur au plus 90 secondes, toujours chiffré de bout en bout et en mémoire seulement. La politique de confidentialité le précise.
+
+### Améliorations
+
+- **Vue caméra beaucoup plus nette et plus fluide.** Les images voyagent désormais en vraie vidéo (H.264) : seul ce qui change d'une image à l'autre est envoyé. À débit égal, l'image est 5 à 10 fois plus fine qu'avant. La vue réduite passe en 640 px, et le plein écran démarre en 1280 × 720, puis monte jusqu'à 1920 × 1080 si la caméra et la connexion le permettent.
+- **Le plein écran garde sa qualité.** Avant, un seul ralentissement passager du réseau suffisait à faire retomber l'image à sa plus petite taille, sans qu'elle remonte. Désormais, seul un ralentissement qui dure fait baisser la qualité, et elle remonte d'elle-même dès que le réseau va mieux.
+- **Décodage plus léger sur Windows et Android.** La vidéo est dessinée directement par la carte graphique, sans détour : moins de charge et plus d'images par seconde.
+- Sur téléphone, l'image de la caméra est tournée par l'appareil qui la reçoit, plus par celui qui filme : moins de calcul, et une vue qui suit le téléphone quand on le tourne.
+
+### Corrections
+
+- **Windows : les messages vocaux ne s'enregistraient plus** (« Micro indisponible : PlatformException »), quel que soit le micro choisi. Ils s'enregistrent à nouveau. Un vocal enregistré sous Windows dure au plus 48 secondes.
+
+---
+
 ## 0.4.0 — 6 novembre 2026
 
 ### Nouveautés

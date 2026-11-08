@@ -666,17 +666,20 @@ void main() {
       expect(opened.text, 'Rendez-vous à 18 h');
     });
 
-    test('a large sealed frame passes untouched, without being decoded', () async {
-      final a = await (await client()).register(idA);
-      final b = await (await client()).register(idB);
-      final sid = await pair(a, b);
-      final data = 'QUJD' * 2000;
-      a.send(SealedFrame(sid: sid, n: 1, data: data));
-      final received = await b.expectNext<SealedFrame>();
-      expect(received.data, data);
-      expect(received.n, 1);
-      await a.expectSilence();
-    });
+    test(
+      'a large sealed frame passes untouched, without being decoded',
+      () async {
+        final a = await (await client()).register(idA);
+        final b = await (await client()).register(idB);
+        final sid = await pair(a, b);
+        final data = 'QUJD' * 2000;
+        a.send(SealedFrame(sid: sid, n: 1, data: data));
+        final received = await b.expectNext<SealedFrame>();
+        expect(received.data, data);
+        expect(received.n, 1);
+        await a.expectSilence();
+      },
+    );
 
     test('a large sealed frame cannot enter a session of others', () async {
       final a = await (await client()).register(idA);
@@ -693,7 +696,9 @@ void main() {
       final a = await (await client()).register(idA);
       final b = await (await client()).register(idB);
       final sid = await pair(a, b);
-      a.send(ImageDataFrame(sid: sid, img: '0011223344556677', data: 'QUJD' * 2000));
+      a.send(
+        ImageDataFrame(sid: sid, img: '0011223344556677', data: 'QUJD' * 2000),
+      );
       expect((await a.expectNext<ErrorFrame>()).code, 'unencrypted');
       await b.expectSilence();
     });
@@ -745,13 +750,151 @@ void main() {
       expect(relay.sessionCount, 1);
     });
 
-    test('disconnect sends peer_left and ends the session', () async {
-      final a = await (await client()).register(idA);
+    test('an older client that disconnects ends its sessions', () async {
+      final a = await client();
+      a.id = idA;
+      // Version 2 cannot resume a conversation: none waits for it.
+      a.send(RegisterFrame(id: idA, secret: signer.sign(idA), v: 2));
+      await a.expectNext<RegisteredFrame>();
       final b = await (await client()).register(idB);
       final sid = await pair(a, b);
       await a.close();
       expect((await b.expectNext<PeerLeftFrame>()).sid, sid);
       expect(relay.sessionCount, 0);
+      expect(relay.awayCount, 0);
+    });
+  });
+
+  group('lost connection', () {
+    /// Registers [c] as [id] and returns the conversations it resumes.
+    Future<List<String>> comeBack(TestClient c, String id) async {
+      c.id = id;
+      c.send(RegisterFrame(id: id, secret: signer.sign(id)));
+      return (await c.expectNext<RegisteredFrame>()).sessions;
+    }
+
+    test('a dropped client is away, then resumes its conversations', () async {
+      final a = await (await client()).register(idA);
+      final b = await (await client()).register(idB);
+      final sid = await pair(a, b);
+      await a.close();
+      expect((await b.expectNext<PeerAwayFrame>()).sid, sid);
+      expect(relay.sessionCount, 1);
+      expect(relay.awayCount, 1);
+
+      // Sent while A is away: it waits on the relay, in order.
+      for (final text in ['un', 'deux']) {
+        await b.sendSecure(
+          MessageCommitFrame(
+            sid: sid,
+            seq: text.length,
+            text: text,
+            mid: text == 'un' ? '0000000000000001' : '0000000000000002',
+          ),
+        );
+      }
+      await b.expectSilence();
+
+      final back = await client();
+      expect(await comeBack(back, idA), [sid]);
+      // The same keys, still in the app's memory.
+      back.e2e[sid] = a.e2e[sid]!;
+      expect((await back.expectSecure<MessageCommitFrame>()).text, 'un');
+      expect((await back.expectSecure<MessageCommitFrame>()).text, 'deux');
+      expect((await b.expectNext<PeerBackFrame>()).sid, sid);
+      expect(relay.awayCount, 0);
+
+      await back.sendSecure(
+        MessageCommitFrame(
+          sid: sid,
+          seq: 9,
+          text: 'revenu',
+          mid: '0000000000000003',
+        ),
+      );
+      expect((await b.expectSecure<MessageCommitFrame>()).text, 'revenu');
+    });
+
+    test('back before its old connection is found dead', () async {
+      final a = await (await client()).register(idA);
+      final b = await (await client()).register(idB);
+      final sid = await pair(a, b);
+      // A new connection of the same app, the old one still open.
+      final back = await client();
+      expect(await comeBack(back, idA), [sid]);
+      back.e2e[sid] = a.e2e[sid]!;
+      await b.expectSilence();
+      await b.sendSecure(
+        MessageCommitFrame(
+          sid: sid,
+          seq: 1,
+          text: 'là',
+          mid: '0000000000000001',
+        ),
+      );
+      expect((await back.expectSecure<MessageCommitFrame>()).text, 'là');
+    });
+
+    test('a conversation left meanwhile is not resumed', () async {
+      final a = await (await client()).register(idA);
+      final b = await (await client()).register(idB);
+      final sid = await pair(a, b);
+      await a.close();
+      await b.expectNext<PeerAwayFrame>();
+      b.send(SessionLeaveFrame(sid: sid));
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      expect(relay.sessionCount, 0);
+      expect(await comeBack(await client(), idA), isEmpty);
+    });
+
+    test('too much waiting ends the conversation', () async {
+      final a = await (await client()).register(idA);
+      final b = await (await client()).register(idB);
+      final sid = await pair(a, b);
+      await a.close();
+      await b.expectNext<PeerAwayFrame>();
+      final image = 'A' * (kMaxLiveFrameDataLength - 4);
+      for (
+        var n = 1;
+        n * image.length < kAwayBufferLength + image.length;
+        n++
+      ) {
+        await b.sendSecure(LiveVideoFrame(sid: sid, n: n, data: image));
+      }
+      expect((await b.expectNext<PeerLeftFrame>()).sid, sid);
+      expect(relay.sessionCount, 0);
+    });
+
+    test('not back in time: the conversation ends', () async {
+      final quick = Relay(
+        IdStore.memory(),
+        signer: signer,
+        sessionGrace: const Duration(milliseconds: 300),
+      );
+      final other = await serve(quick, address: 'localhost', port: 0);
+      addTearDown(() => other.close(force: true));
+      Future<TestClient> connect() async {
+        final c = await TestClient.connect(other.port);
+        clients.add(c);
+        return c;
+      }
+
+      final a = await (await connect()).register(idA);
+      final b = await (await connect()).register(idB);
+      final sid = await pair(a, b);
+      await a.close();
+      expect((await b.expectNext<PeerAwayFrame>()).sid, sid);
+      expect((await b.expectNext<PeerLeftFrame>()).sid, sid);
+      expect(quick.sessionCount, 0);
+      expect(quick.awayCount, 0);
+      expect(await comeBack(await connect(), idA), isEmpty);
+    });
+
+    test('a client without conversations is simply offline', () async {
+      final a = await (await client()).register(idA);
+      await a.close();
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      expect(relay.awayCount, 0);
     });
   });
 

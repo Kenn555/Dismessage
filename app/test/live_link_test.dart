@@ -1,9 +1,11 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:dismessage/services/chat_session.dart';
 import 'package:dismessage/services/live_camera.dart';
 import 'package:dismessage/services/live_link.dart';
+import 'package:dismessage/services/live_video.dart';
 import 'package:dismessage_protocol/dismessage_protocol.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -18,7 +20,10 @@ void main() {
   late List<String> notices;
   ChatSession? current;
 
-  ChatSession newSession({LiveCamera? Function()? createCamera}) {
+  ChatSession newSession({
+    LiveCamera? Function()? createCamera,
+    LiveVideoCodecs? video,
+  }) {
     sent = [];
     now = 0;
     notices = [];
@@ -30,6 +35,7 @@ void main() {
       createLiveCamera: createCamera ?? () => camera,
       // Nothing to display in these tests: only the logic.
       decodeLiveFrame: (_) async => null,
+      liveVideo: video ?? const NoLiveVideo(),
       liveClock: () => now,
     );
     session.live.notices.listen(notices.add);
@@ -185,7 +191,9 @@ void main() {
     test('a camera failing while shared stops the sharing', () async {
       final session = newSession();
       session.receive(const LiveRequestFrame(sid: 's1'));
-      camera.frameFailure = const LiveCameraException('La caméra s’est arrêtée.');
+      camera.frameFailure = const LiveCameraException(
+        'La caméra s’est arrêtée.',
+      );
       await session.live.acceptRequest();
       await settle();
 
@@ -395,6 +403,296 @@ void main() {
     });
   });
 
+  group('video', () {
+    /// A video frame from the owner.
+    LiveVideoFrame videoFrame(int n, {bool key = false, int rotation = 0}) =>
+        LiveVideoFrame(
+          sid: 's1',
+          n: n,
+          data: base64Encode([n]),
+          key: key,
+          rotation: rotation,
+        );
+
+    /// The view on screen, watching an owner who chose H.264.
+    (ChatSession, FakeLiveVideo) watching() {
+      final video = FakeLiveVideo();
+      final session = newSession(video: video);
+      session.live.image.addListener(() {});
+      session.live.request();
+      session.receive(const LiveAcceptFrame(sid: 's1', codec: kLiveCodecH264));
+      return (session, video);
+    }
+
+    group('camera owner', () {
+      Future<(ChatSession, Future<void>)> sharing({
+        List<String> offered = const [kLiveCodecH264],
+        Set<String> encodes = const {kLiveCodecH264},
+        int rotation = 0,
+      }) async {
+        final session = newSession();
+        camera
+          ..codecs = encodes
+          ..rotation = rotation;
+        session.receive(LiveRequestFrame(sid: 's1', codecs: offered));
+        final running = session.live.acceptRequest();
+        await settle();
+        addTearDown(() async {
+          session.live.stopSharing();
+          await running;
+        });
+        return (session, running);
+      }
+
+      test('both sides can: video, from a key frame, larger', () async {
+        final (session, _) = await sharing();
+        expect((sent.first as LiveAcceptFrame).codec, kLiveCodecH264);
+        expect(session.live.sharedCodec, kLiveCodecH264);
+        final first = sent.whereType<LiveVideoFrame>().first;
+        expect(first.key, isTrue);
+        expect(base64Decode(first.data), camera.frame);
+        expect(camera.requests.first.codec, kLiveCodecH264);
+        expect(camera.requests.first.key, isTrue);
+        expect(camera.requests.first.kbps, kLiveStartKbps);
+        expect(camera.requests.first.side, kLiveVideoSmallSide);
+        expect(camera.captureSides, contains(kLiveVideoSmallSide));
+        // The following ones need it: no key frame unless asked for.
+        expect(sent.whereType<LiveVideoFrame>().skip(1).first.key, isFalse);
+      });
+
+      test('an older viewer gets JPEG, whatever the camera can do', () async {
+        final (session, _) = await sharing(offered: const []);
+        expect((sent.first as LiveAcceptFrame).codec, isNull);
+        expect(session.live.sharedCodec, isNull);
+        expect(camera.requests.first.codec, isNull);
+        expect(sent.whereType<LiveVideoFrame>().first.key, isFalse);
+      });
+
+      test('a camera without encoder sends JPEG', () async {
+        await sharing(encodes: const {});
+        expect((sent.first as LiveAcceptFrame).codec, isNull);
+        expect(camera.requests.first.codec, isNull);
+      });
+
+      test('the viewer asks for a key frame: the next one is', () async {
+        final (session, _) = await sharing();
+        session.receive(const LiveKeyFrame(sid: 's1'));
+        final asked = camera.requests.length;
+        // Acknowledgements let the next frames leave.
+        session.receive(
+          LiveAckFrame(sid: 's1', n: sent.whereType<LiveVideoFrame>().last.n),
+        );
+        await settle();
+        expect(camera.requests.skip(asked).first.key, isTrue);
+        // Then deltas again.
+        expect(camera.requests.last.key, isFalse);
+      });
+
+      test('the turn of a phone camera goes with each frame', () async {
+        await sharing(rotation: 270);
+        expect(sent.whereType<LiveVideoFrame>().first.rotation, 270);
+      });
+
+      test('a frame too large is skipped and a key frame follows', () async {
+        final (session, _) = await sharing();
+        final kbps = session.live.flow!.kbps;
+        camera.frame = Uint8List(kMaxLiveFrameBytes + 1);
+        final before = sent.whereType<LiveVideoFrame>().length;
+        session.receive(
+          LiveAckFrame(sid: 's1', n: sent.whereType<LiveVideoFrame>().last.n),
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 100));
+        expect(sent.whereType<LiveVideoFrame>(), hasLength(before));
+        expect(session.live.flow!.kbps, lessThan(kbps));
+        expect(camera.requests.last.key, isTrue);
+      });
+
+      test(
+        'my own thumbnail comes from a small preview, now and then',
+        () async {
+          final session = newSession();
+          camera.codecs = {kLiveCodecH264};
+          session.live.ownImage.addListener(() {});
+          session.receive(
+            const LiveRequestFrame(sid: 's1', codecs: [kLiveCodecH264]),
+          );
+          final running = session.live.acceptRequest();
+          await settle();
+          session.live.stopSharing();
+          await running;
+          final previews = camera.requests.where((r) => r.preview).toList();
+          expect(previews, isNotEmpty);
+          expect(
+            camera.requests.where((r) => r.preview).length,
+            lessThan(camera.requests.length),
+          );
+        },
+      );
+
+      test('no preview when nobody looks at the thumbnail', () async {
+        await sharing();
+        expect(camera.requests.where((r) => r.preview), isEmpty);
+      });
+
+      test('full screen starts larger, with more bitrate', () async {
+        final (session, _) = await sharing();
+        session.receive(const LiveSizeFrame(sid: 's1', side: kLiveFullSide));
+        session.receive(
+          LiveAckFrame(sid: 's1', n: sent.whereType<LiveVideoFrame>().last.n),
+        );
+        await settle();
+        expect(camera.requests.last.side, kLiveVideoFullStartSide);
+        expect(camera.requests.last.kbps, kLiveFullStartKbps);
+        expect(camera.captureSides.last, kLiveFullSide);
+      });
+    });
+
+    group('viewer', () {
+      test('the request offers what this device decodes', () {
+        final session = newSession(video: FakeLiveVideo());
+        session.live.request();
+        expect((sent.single as LiveRequestFrame).codecs, [kLiveCodecH264]);
+      });
+
+      test('a device without decoder offers nothing: JPEG', () {
+        final session = newSession(video: FakeLiveVideo(codecs: {}));
+        session.live.request();
+        expect((sent.single as LiveRequestFrame).codecs, isEmpty);
+      });
+
+      test('frames are decoded in order, all of them, then shown', () async {
+        final (session, video) = watching();
+        session.receive(videoFrame(1, key: true, rotation: 90));
+        for (var n = 2; n <= 5; n++) {
+          session.receive(videoFrame(n, rotation: 90));
+        }
+        await settle();
+        final decoder = video.created.single;
+        expect(decoder.decoded.map((d) => d.data.single), [1, 2, 3, 4, 5]);
+        expect(decoder.decoded.first.key, isTrue);
+        expect(session.live.codec, kLiveCodecH264);
+        final picture = session.live.image.value!;
+        expect(picture.texture, decoder.texture);
+        expect(picture.rotation, 90);
+        expect(picture.aspectRatio, 480 / 640);
+        expect(sent.whereType<LiveAckFrame>().last.n, 5);
+      });
+
+      test('a delta without its key frame waits, and one is asked', () async {
+        final (session, video) = watching();
+        session.receive(videoFrame(1));
+        session.receive(videoFrame(2));
+        await settle();
+        expect(video.created, isEmpty);
+        // Asked once, not for every frame.
+        expect(sent.whereType<LiveKeyFrame>(), hasLength(1));
+        // Acknowledged all the same: the owner goes on.
+        expect(sent.whereType<LiveAckFrame>().last.n, 2);
+        now += kLiveKeyRequestMs;
+        session.receive(videoFrame(3));
+        expect(sent.whereType<LiveKeyFrame>(), hasLength(2));
+        session.receive(videoFrame(4, key: true));
+        await settle();
+        expect(video.created.single.decoded.single.data.single, 4);
+      });
+
+      test('nothing is decoded off screen; back on it, a key frame', () async {
+        final video = FakeLiveVideo();
+        final session = newSession(video: video);
+        session.live.request();
+        session.receive(
+          const LiveAcceptFrame(sid: 's1', codec: kLiveCodecH264),
+        );
+        session.receive(videoFrame(1, key: true));
+        session.receive(videoFrame(2));
+        await settle();
+        expect(video.created, isEmpty);
+        expect(sent.whereType<LiveAckFrame>().last.n, 2);
+
+        void show() {}
+        session.live.image.addListener(show);
+        session.receive(videoFrame(3));
+        await settle();
+        expect(video.created, isEmpty);
+        expect(sent.whereType<LiveKeyFrame>(), hasLength(1));
+        session.receive(videoFrame(4, key: true));
+        await settle();
+        expect(video.created.single.decoded, hasLength(1));
+        session.live.image.removeListener(show);
+      });
+
+      test('a broken frame: a new decoder, from a key frame', () async {
+        final (session, video) = watching();
+        session.receive(videoFrame(1, key: true));
+        await settle();
+        final first = video.created.single..failNext = true;
+        session.receive(videoFrame(2));
+        await settle();
+        expect(first.closed, isTrue);
+        expect(sent.whereType<LiveKeyFrame>(), hasLength(1));
+        session.receive(videoFrame(3));
+        await settle();
+        expect(video.created, hasLength(1));
+        session.receive(videoFrame(4, key: true));
+        await settle();
+        expect(video.created, hasLength(2));
+        expect(video.created.last.decoded.single.key, isTrue);
+      });
+
+      test('too far behind: dropped, and a key frame asked', () async {
+        final (session, video) = watching();
+        session.receive(videoFrame(1, key: true));
+        await settle();
+        final decoder = video.created.single..gate = Completer<void>();
+        for (var n = 2; n <= kLiveMaxQueuedFrames + 3; n++) {
+          session.receive(videoFrame(n));
+        }
+        expect(sent.whereType<LiveKeyFrame>(), hasLength(1));
+        decoder.gate!.complete();
+        await settle();
+        // Only what was being decoded when it fell behind.
+        expect(decoder.decoded.length, lessThan(4));
+      });
+
+      test('a codec that was not offered cannot be shown', () async {
+        final session = newSession(video: FakeLiveVideo(codecs: {}));
+        session.live.request();
+        session.receive(
+          const LiveAcceptFrame(sid: 's1', codec: kLiveCodecH264),
+        );
+        await settle();
+        expect(session.live.watch, LiveWatch.idle);
+        expect(sent.last, isA<LiveStopFrame>());
+        expect(notices.single, contains('mettez Dismessage à jour'));
+      });
+
+      test('closing the view closes the decoder', () async {
+        final (session, video) = watching();
+        session.receive(videoFrame(1, key: true));
+        await settle();
+        session.live.stopWatching();
+        expect(video.created.single.closed, isTrue);
+        expect(session.live.image.value, isNull);
+        expect(session.live.codec, isNull);
+      });
+
+      test('the owner ignores key requests while sending JPEG', () async {
+        final session = newSession();
+        session.receive(const LiveRequestFrame(sid: 's1'));
+        final running = session.live.acceptRequest();
+        await settle();
+        session.receive(const LiveKeyFrame(sid: 's1'));
+        session.receive(
+          LiveAckFrame(sid: 's1', n: sent.whereType<LiveVideoFrame>().last.n),
+        );
+        await settle();
+        expect(camera.requests.every((r) => !r.key && r.codec == null), isTrue);
+        session.live.stopSharing();
+        await running;
+      });
+    });
+  });
+
   group('what changes tells apart', () {
     test('the peer typing does not touch the timeline', () {
       final session = newSession();
@@ -474,46 +772,51 @@ void main() {
       expect(offers.last.reply, isNull);
     });
 
-    test('accepting the group takes every file, one upload at a time', () async {
-      final receiverSent = <Frame>[];
-      final disk = MemoryFileStorage();
-      final receiver = current = ChatSession(
-        sid: 's1',
-        peer: peer,
-        send: receiverSent.add,
-        files: disk,
-      );
-      final uploads = <Frame>[];
-      final sender = ChatSession(sid: 's1', peer: peer, send: uploads.add);
-      addTearDown(sender.dispose);
-      final a = FakeChosenFile('a.bin', Uint8List(kFileChunkBytes * 2));
-      final b = FakeChosenFile('b.bin', Uint8List(10));
-      sender.sendBatch(files: [a, b]);
-      for (final offer in uploads.whereType<FileOfferFrame>()) {
-        receiver.receive(offer);
-      }
-      final group = receiver.messages.first.group!;
+    test(
+      'accepting the group takes every file, one upload at a time',
+      () async {
+        final receiverSent = <Frame>[];
+        final disk = MemoryFileStorage();
+        final receiver = current = ChatSession(
+          sid: 's1',
+          peer: peer,
+          send: receiverSent.add,
+          files: disk,
+        );
+        final uploads = <Frame>[];
+        final sender = ChatSession(sid: 's1', peer: peer, send: uploads.add);
+        addTearDown(sender.dispose);
+        final a = FakeChosenFile('a.bin', Uint8List(kFileChunkBytes * 2));
+        final b = FakeChosenFile('b.bin', Uint8List(10));
+        sender.sendBatch(files: [a, b]);
+        for (final offer in uploads.whereType<FileOfferFrame>()) {
+          receiver.receive(offer);
+        }
+        final group = receiver.messages.first.group!;
 
-      await receiver.acceptGroup(group);
-      expect(disk.sinks, hasLength(2));
-      expect(receiver.pendingFiles, isEmpty);
-      final accepts = receiverSent.whereType<FileAcceptFrame>().toList();
-      expect(accepts, hasLength(2));
+        await receiver.acceptGroup(group);
+        expect(disk.sinks, hasLength(2));
+        expect(receiver.pendingFiles, isEmpty);
+        final accepts = receiverSent.whereType<FileAcceptFrame>().toList();
+        expect(accepts, hasLength(2));
 
-      for (final accept in accepts) {
-        sender.receive(accept);
-      }
-      await settle();
-      // Only the first file's chunks are leaving.
-      final chunks = uploads.whereType<FileChunkFrame>().toList();
-      expect(chunks.map((c) => c.fid).toSet(), hasLength(1));
-      expect(b.reads, isEmpty);
+        for (final accept in accepts) {
+          sender.receive(accept);
+        }
+        await settle();
+        // Only the first file's chunks are leaving.
+        final chunks = uploads.whereType<FileChunkFrame>().toList();
+        expect(chunks.map((c) => c.fid).toSet(), hasLength(1));
+        expect(b.reads, isEmpty);
 
-      // First one finished: the next one starts.
-      sender.receive(FileAckFrame(sid: 's1', fid: chunks.first.fid, count: 2));
-      await settle();
-      expect(b.reads, isNotEmpty);
-    });
+        // First one finished: the next one starts.
+        sender.receive(
+          FileAckFrame(sid: 's1', fid: chunks.first.fid, count: 2),
+        );
+        await settle();
+        expect(b.reads, isNotEmpty);
+      },
+    );
 
     test('refusing the group refuses what waits', () {
       final session = newSession();

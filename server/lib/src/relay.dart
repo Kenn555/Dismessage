@@ -18,6 +18,9 @@ class _Client {
   final ConnectionLimiter limiter;
   String? id;
 
+  /// Protocol version given in `register` (1 when absent).
+  int version = 1;
+
   /// Limits already logged for this connection (one line each, not a flood).
   final Set<String> loggedLimits = {};
 
@@ -40,6 +43,17 @@ class _Session {
   String other(String id) => id == a ? b : a;
 }
 
+/// A client whose connection dropped, with conversations kept for it until
+/// it comes back (or [kSessionGraceSeconds] pass).
+class _Away {
+  _Away(this.timer);
+  final Timer timer;
+
+  /// Frames for it, in order, with their session.
+  final List<(String sid, Object? raw)> waiting = [];
+  int length = 0;
+}
+
 /// Routes frames between clients: registration, pairing and session relay.
 class Relay {
   Relay(
@@ -51,6 +65,7 @@ class Relay {
     IdSigner? signer,
     this.acceptLegacyIds = false,
     this.minProtocolVersion = kMinProtocolVersion,
+    this.sessionGrace = const Duration(seconds: kSessionGraceSeconds),
   }) : _random = random ?? Random.secure(),
        _log = log ?? _silent,
        _limits = limits,
@@ -73,6 +88,10 @@ class Relay {
 
   /// Older clients are refused with `update_required`, which they show.
   final int minProtocolVersion;
+
+  /// How long the conversations of a client whose connection dropped wait
+  /// for it.
+  final Duration sessionGrace;
   final RateLimits _limits;
   final DateTime Function() _clock;
   late final IpLimiters _ips;
@@ -80,6 +99,9 @@ class Relay {
   final Random _random;
   final Map<String, _Client> _online = {};
   final Map<String, _Session> _sessions = {};
+
+  /// IDs whose connection dropped, with conversations waiting for them.
+  final Map<String, _Away> _away = {};
 
   /// Watched ID → clients following its presence.
   final Map<String, Set<_Client>> _watchers = {};
@@ -89,6 +111,9 @@ class Relay {
 
   int get onlineCount => _online.length;
   int get sessionCount => _sessions.length;
+
+  /// IDs away, whose conversations wait for them.
+  int get awayCount => _away.length;
 
   /// Serves one WebSocket connection until it closes.
   ///
@@ -132,7 +157,7 @@ class Relay {
           '- déconnexion ${client.id == null ? '($from)' : _fmt(client.id!)}',
         );
         ip.connections--;
-        _unregister(client);
+        _drop(client);
         _watch(client, const []);
       }),
       onError: (_) {},
@@ -175,7 +200,8 @@ class Relay {
           "Cette version de Dismessage n'est plus acceptée : "
           'installez la nouvelle.',
         );
-      case RegisterFrame(:final id, :final secret):
+      case RegisterFrame(:final id, :final secret, :final v):
+        client.version = v;
         await _register(client, id, secret);
       case IdRequestFrame():
         await _assignId(client);
@@ -248,18 +274,91 @@ class Relay {
       client.send(IdAssignedFrame(id: id, secret: signer.sign(id)));
     }
     if (client.id != null && client.id != id) _unregister(client);
+    final resumable = client.version >= kResumableProtocolVersion;
     final previous = _online[id];
     if (previous != null && previous != client) {
       // Same ID connected elsewhere: the newest connection wins. It stays
-      // online for its watchers.
-      _unregister(previous, silent: true);
+      // online for its watchers. Often the same app, back on a new
+      // connection before the old one was found dead: its conversations
+      // follow it.
+      _unregister(previous, silent: true, keepSessions: resumable);
       previous.channel.sink.close();
     }
+    final away = _away.remove(id);
+    away?.timer.cancel();
+    if (!resumable && away != null) _endSessions(id);
     client.id = id;
     _online[id] = client;
-    client.send(RegisteredFrame(id: id));
+    final resumed = resumable
+        ? [
+            for (final session in _sessions.values)
+              if (session.involves(id)) session.sid,
+          ].take(kMaxResumedSessions).toList()
+        : const <String>[];
+    client.send(RegisteredFrame(id: id, sessions: resumed));
     if (previous == null) _notifyPresence(id, online: true);
     _log('  ID ${_fmt(id)} en ligne (${_online.length} en ligne)');
+    if (resumed.isEmpty) return;
+    // What waited, in order, then the peers learn it is back.
+    for (final (sid, raw) in away?.waiting ?? const <(String, Object?)>[]) {
+      if (_sessions.containsKey(sid)) client.sendRaw(raw);
+    }
+    if (away != null) {
+      _log(
+        '  ${_fmt(id)} de retour : ${resumed.length} conversation(s) reprise(s)',
+      );
+      for (final sid in resumed) {
+        final other = _sessions[sid]!.other(id);
+        _online[other]?.send(PeerBackFrame(sid: sid));
+      }
+    }
+  }
+
+  /// A connection closed. A client that can resume keeps its conversations
+  /// for [sessionGrace]: the peers are told it is away, and what they send
+  /// waits for it.
+  void _drop(_Client client) {
+    final id = client.id;
+    if (id == null) return;
+    final keep =
+        client.version >= kResumableProtocolVersion &&
+        _online[id] == client &&
+        _sessions.values.any((s) => s.involves(id));
+    _unregister(client, keepSessions: keep);
+    if (!keep) return;
+    _away[id]?.timer.cancel();
+    _away[id] = _Away(
+      Timer(sessionGrace, () {
+        if (_away[id] == null) return;
+        _away.remove(id);
+        _log('  ${_fmt(id)} pas revenu : conversations terminées');
+        _endSessions(id);
+      }),
+    );
+    _log('  ${_fmt(id)} absent : conversations gardées');
+    for (final session in _sessions.values.where((s) => s.involves(id))) {
+      _online[session.other(id)]?.send(PeerAwayFrame(sid: session.sid));
+    }
+  }
+
+  /// Ends every conversation of [id]; the peers still there are told.
+  void _endSessions(String id) {
+    final ended = _sessions.values.where((s) => s.involves(id)).toList();
+    for (final session in ended) {
+      _endSession(session, leaving: id);
+    }
+  }
+
+  /// [leaving] left (or is gone): the other side is told, now or when back.
+  void _endSession(_Session session, {required String leaving}) {
+    _sessions.remove(session.sid);
+    final other = session.other(leaving);
+    _online[other]?.send(PeerLeftFrame(sid: session.sid));
+    // An away peer finds it missing from `registered` when back.
+    final away = _away[other];
+    if (away != null) {
+      away.waiting.removeWhere((w) => w.$1 == session.sid);
+    }
   }
 
   /// Frees [id] (a new one replaced it). A signed secret stays valid, but
@@ -368,15 +467,29 @@ class Relay {
     if (me == null || session == null || !session.involves(me)) {
       return _error(client, 'unknown_session', 'Session inconnue');
     }
-    _online[session.other(me)]?.sendRaw(raw);
+    final other = session.other(me);
+    final online = _online[other];
+    if (online != null) return online.sendRaw(raw);
+    final away = _away[other];
+    if (away == null) return;
+    // Kept for its return, within reason: a conversation that would need
+    // more is over.
+    final length = raw is String ? raw.length : 0;
+    if (away.length + length > kAwayBufferLength) {
+      _log(
+        '  trop de trames en attente pour ${_fmt(other)} : conversation terminée',
+      );
+      return _endSession(session, leaving: other);
+    }
+    away.waiting.add((sid, raw));
+    away.length += length;
   }
 
   void _leave(_Client client, String sid) {
     final me = client.id;
     final session = _sessions[sid];
     if (me == null || session == null || !session.involves(me)) return;
-    _sessions.remove(sid);
-    _online[session.other(me)]?.send(PeerLeftFrame(sid: sid));
+    _endSession(session, leaving: me);
   }
 
   /// Replaces the IDs [client] follows and tells it their current state.
@@ -400,7 +513,12 @@ class Relay {
   }
 
   /// [silent]: the ID reconnects elsewhere, so watchers are not told.
-  void _unregister(_Client client, {bool silent = false}) {
+  /// [keepSessions]: its conversations wait for it ([_drop]).
+  void _unregister(
+    _Client client, {
+    bool silent = false,
+    bool keepSessions = false,
+  }) {
     final id = client.id;
     if (id == null) return;
     client.id = null;
@@ -420,11 +538,10 @@ class Relay {
       }
       _pending.remove(pending);
     }
-    final ended = _sessions.values.where((s) => s.involves(id)).toList();
-    for (final session in ended) {
-      _sessions.remove(session.sid);
-      _online[session.other(id)]?.send(PeerLeftFrame(sid: session.sid));
-    }
+    if (keepSessions) return;
+    final away = _away.remove(id);
+    away?.timer.cancel();
+    _endSessions(id);
   }
 
   String? _requireId(_Client client) {

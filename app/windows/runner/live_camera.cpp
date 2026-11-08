@@ -18,6 +18,8 @@
 #include <variant>
 #include <vector>
 
+#include "video_codec.h"
+
 namespace {
 
 using flutter::EncodableMap;
@@ -150,6 +152,15 @@ flutter::EncodableList ListCameras() {
   }
   if (SUCCEEDED(started)) ::MFShutdown();
   return list;
+}
+
+bool BoolArgument(const flutter::EncodableValue* arguments, const char* key) {
+  const auto* map = std::get_if<EncodableMap>(arguments);
+  if (map == nullptr) return false;
+  const auto it = map->find(EncodableValue(key));
+  if (it == map->end()) return false;
+  const auto* value = std::get_if<bool>(&it->second);
+  return value != nullptr && *value;
 }
 
 std::string StringArgument(const flutter::EncodableValue* arguments,
@@ -324,13 +335,74 @@ bool EncodeJpeg(IWICImagingFactory* factory, std::vector<uint8_t>& pixels,
          read == jpeg->size();
 }
 
+// [pixels] (BGRX, [width] x [height]) at [out_width] x [out_height]: Fant
+// averages what it drops, without the shimmer of a plain resampling.
+bool ScalePixels(IWICImagingFactory* factory, std::vector<uint8_t>& pixels,
+                 UINT32 width, UINT32 height, UINT32 out_width,
+                 UINT32 out_height, std::vector<uint8_t>* out) {
+  ComPtr<IWICBitmap> bitmap;
+  ComPtr<IWICBitmapScaler> scaler;
+  if (FAILED(factory->CreateBitmapFromMemory(
+          width, height, GUID_WICPixelFormat32bppBGR, width * 4,
+          static_cast<UINT>(pixels.size()), pixels.data(), &bitmap)) ||
+      FAILED(factory->CreateBitmapScaler(&scaler)) ||
+      FAILED(scaler->Initialize(bitmap.Get(), out_width, out_height,
+                                WICBitmapInterpolationModeFant))) {
+    return false;
+  }
+  out->resize(static_cast<size_t>(out_width) * out_height * 4);
+  return SUCCEEDED(scaler->CopyPixels(nullptr, out_width * 4,
+                                      static_cast<UINT>(out->size()),
+                                      out->data()));
+}
+
+// The size of an image of [width] x [height] whose longest side is at most
+// [side], even (video keeps colours for 2 x 2 pixels).
+void FitEven(UINT32 width, UINT32 height, int side, UINT32* out_width,
+             UINT32* out_height) {
+  const UINT32 longest = (std::max)(width, height);
+  UINT32 w = width, h = height;
+  if (side > 0 && longest > static_cast<UINT32>(side)) {
+    w = width * static_cast<UINT32>(side) / longest;
+    h = height * static_cast<UINT32>(side) / longest;
+  }
+  *out_width = (std::max)(2u, w & ~1u);
+  *out_height = (std::max)(2u, h & ~1u);
+}
+
+// Whether this Windows can encode H.264, found out once.
+bool CanEncode() {
+  static const bool available = [] {
+    const HRESULT started = ::MFStartup(MF_VERSION, MFSTARTUP_LITE);
+    const bool found = SUCCEEDED(started) && H264Encoder::Available();
+    if (SUCCEEDED(started)) ::MFShutdown();
+    return found;
+  }();
+  return available;
+}
+
 }  // namespace
 
 // What the thread hands back to the platform thread.
 struct Outcome {
   bool opened = false;  // Else: a frame.
   std::string error;    // A code, in French on the Dart side.
+  // A JPEG, or a video access unit when [video].
   std::vector<uint8_t> jpeg;
+  bool video = false;
+  bool key = false;
+  // Video: a small JPEG of the same image, when asked for.
+  std::vector<uint8_t> preview;
+};
+
+// What the next frame should be ("frame" call).
+struct Wanted {
+  int quality = 0;  // 0: none wanted.
+  int side = 320;
+  bool video = false;
+  int kbps = 700;
+  bool key = false;
+  bool preview = false;
 };
 
 struct LiveCamera::Worker {
@@ -339,8 +411,8 @@ struct LiveCamera::Worker {
   const HWND window;
   std::atomic<bool> stop{false};
   std::atomic<bool> failed{false};
-  std::atomic<int> wanted_quality{0};
-  std::atomic<int> wanted_side{320};
+  // The frame asked for, under [mutex].
+  Wanted wanted;
   // Asked of the camera; 0 once done.
   std::atomic<int> capture_side{0};
   // Row step of the last image, 0 for a plain buffer.
@@ -417,6 +489,10 @@ void RunCamera(std::shared_ptr<LiveCamera::Worker> worker, int side,
     worker->Post(std::move(opened));
 
     std::vector<uint8_t> pixels;
+    std::vector<uint8_t> scaled;
+    std::vector<uint8_t> nv12;
+    H264Encoder encoder;
+    bool reopen = false;
     while (error.empty() && !worker->stop) {
       // Full screen asks for more, leaving it for less.
       const int capture = worker->capture_side.exchange(0);
@@ -447,14 +523,58 @@ void RunCamera(std::shared_ptr<LiveCamera::Worker> worker, int side,
       if (sample == nullptr) continue;
       worker->samples++;
       // The image that just came, and only if someone wants it.
-      const int quality = worker->wanted_quality.exchange(0);
-      if (quality == 0) continue;
+      Wanted wanted;
+      {
+        std::lock_guard<std::mutex> lock(worker->mutex);
+        wanted = worker->wanted;
+        worker->wanted.quality = 0;
+      }
+      if (wanted.quality == 0) continue;
       Outcome frame;
       int pitch = 0;
       if (CopyPixels(sample.Get(), width, height, &pixels, &pitch)) {
         worker->pitch = pitch;
-        EncodeJpeg(factory.Get(), pixels, width, height,
-                   worker->wanted_side.load(), quality, &frame.jpeg);
+        if (!wanted.video) {
+          EncodeJpeg(factory.Get(), pixels, width, height, wanted.side,
+                     wanted.quality, &frame.jpeg);
+        } else {
+          frame.video = true;
+          UINT32 out_width = 0, out_height = 0;
+          FitEven(width, height, wanted.side, &out_width, &out_height);
+          std::vector<uint8_t>* image = &pixels;
+          if (out_width != width || out_height != height) {
+            image = ScalePixels(factory.Get(), pixels, width, height,
+                                 out_width, out_height, &scaled)
+                         ? &scaled
+                         : nullptr;
+          }
+          if (image != nullptr) {
+            BgrxToNv12(image->data(), out_width, out_height,
+                       static_cast<size_t>(out_width) * 4, &nv12);
+            hr = S_OK;
+            bool key = wanted.key || reopen;
+            // A new size is a new stream, from a key frame.
+            if (!encoder.IsOpen(out_width, out_height) || reopen) {
+              hr = encoder.Open(out_width, out_height, wanted.kbps);
+              key = true;
+            }
+            reopen = false;
+            if (SUCCEEDED(hr)) {
+              encoder.SetBitrate(wanted.kbps);
+              hr = encoder.Encode(nv12, key, &frame.jpeg, &frame.key);
+            }
+            if (FAILED(hr)) {
+              frame.error = "encoder";
+            } else if (key && !frame.key) {
+              // Forcing a key frame did not work here: a new encoder will.
+              reopen = true;
+            }
+          }
+          if (wanted.preview) {
+            EncodeJpeg(factory.Get(), pixels, width, height, 160, 60,
+                       &frame.preview);
+          }
+        }
       }
       worker->Post(std::move(frame));
     }
@@ -482,12 +602,22 @@ LiveCamera::LiveCamera(flutter::BinaryMessenger* messenger, HWND window)
            StringArgument(call.arguments(), "device"), std::move(result));
     } else if (call.method_name() == "list") {
       result->Success(EncodableValue(ListCameras()));
+    } else if (call.method_name() == "encoders") {
+      flutter::EncodableList codecs;
+      if (CanEncode()) codecs.emplace_back(EncodableValue("h264"));
+      result->Success(EncodableValue(codecs));
     } else if (call.method_name() == "frame") {
-      if (worker_) {
-        worker_->wanted_side = IntArgument(call.arguments(), "side", 320);
-      }
-      RequestFrame(IntArgument(call.arguments(), "quality", 50),
-                   std::move(result));
+      Wanted wanted;
+      const auto* arguments = call.arguments();
+      wanted.quality =
+          (std::clamp)(IntArgument(arguments, "quality", 50), 1, 100);
+      wanted.side = IntArgument(arguments, "side", 320);
+      wanted.video = StringArgument(arguments, "codec") == "h264";
+      wanted.kbps =
+          (std::clamp)(IntArgument(arguments, "kbps", 700), 50, 20000);
+      wanted.key = BoolArgument(arguments, "key");
+      wanted.preview = BoolArgument(arguments, "preview");
+      RequestFrame(wanted, std::move(result));
     } else if (call.method_name() == "capture") {
       if (worker_) {
         worker_->capture_side = IntArgument(call.arguments(), "side", 320);
@@ -526,7 +656,8 @@ void LiveCamera::Open(int side, std::string device,
   std::thread(RunCamera, worker_, side, std::move(device)).detach();
 }
 
-void LiveCamera::RequestFrame(int quality, std::unique_ptr<Result> result) {
+void LiveCamera::RequestFrame(const Wanted& wanted,
+                              std::unique_ptr<Result> result) {
   if (!worker_ || worker_->failed) {
     result->Error("stopped");
     return;
@@ -534,7 +665,8 @@ void LiveCamera::RequestFrame(int quality, std::unique_ptr<Result> result) {
   // Only the latest request counts.
   if (frame_result_) frame_result_->Success();
   frame_result_ = std::move(result);
-  worker_->wanted_quality = (std::clamp)(quality, 1, 100);
+  std::lock_guard<std::mutex> lock(worker_->mutex);
+  worker_->wanted = wanted;
 }
 
 void LiveCamera::Close() {
@@ -567,6 +699,14 @@ bool LiveCamera::HandleWindowMessage(UINT message) {
       result->Error(outcome.error);
     } else if (outcome.opened || outcome.jpeg.empty()) {
       result->Success();
+    } else if (outcome.video) {
+      EncodableMap frame;
+      frame[EncodableValue("data")] = EncodableValue(outcome.jpeg);
+      frame[EncodableValue("key")] = EncodableValue(outcome.key);
+      if (!outcome.preview.empty()) {
+        frame[EncodableValue("preview")] = EncodableValue(outcome.preview);
+      }
+      result->Success(EncodableValue(frame));
     } else {
       result->Success(EncodableValue(outcome.jpeg));
     }

@@ -104,11 +104,12 @@ class E2eSession {
 
   /// 4 zero bytes then [n] on 8 bytes, big-endian. Two 32-bit halves:
   /// web builds have no 64-bit accessor.
-  static List<int> _nonce(int n) => (ByteData(12)
-        ..setUint32(4, n ~/ 0x100000000)
-        ..setUint32(8, n % 0x100000000))
-      .buffer
-      .asUint8List();
+  static List<int> _nonce(int n) =>
+      (ByteData(12)
+            ..setUint32(4, n ~/ 0x100000000)
+            ..setUint32(8, n % 0x100000000))
+          .buffer
+          .asUint8List();
 
   /// Encrypts [frame] (of this conversation). Waits for the key exchange.
   Future<SealedFrame> seal(RelayedFrame frame) async {

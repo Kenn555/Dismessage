@@ -8,6 +8,7 @@
 
 #include "clipboard.h"
 #include "live_camera.h"
+#include "live_video.h"
 #include "notifications.h"
 #include "overlay.h"
 #include "win32_window.h"
@@ -44,6 +45,9 @@ class FlutterWindow : public Win32Window {
 
   // The webcam for the live view ("dismessage/camera" channel).
   std::unique_ptr<LiveCamera> live_camera_;
+
+  // Decoders of the peer's live video ("dismessage/video" channel).
+  std::unique_ptr<LiveVideo> live_video_;
 };
 
 #endif  // RUNNER_FLUTTER_WINDOW_H_

@@ -17,7 +17,7 @@ const kLegalContact = 'kennkerenbezara@gmail.com';
 const kMinimumAge = 18;
 
 /// Last change of these texts, shown in them.
-const kLegalUpdated = '6 novembre 2026';
+const kLegalUpdated = '9 novembre 2026';
 
 /// Accepted at first launch; a new value asks users to accept again.
 const kTermsVersion = '2026-10-08';
@@ -134,7 +134,10 @@ const privacyPolicy = LegalDocument(
           'photos, vocaux, fichiers, images de la vue caméra) est chiffré de '
           'bout en bout sur votre '
           'appareil : le serveur ne transmet que des données illisibles, et '
-          'n’en garde rien. Seuls les deux participants détiennent les clés, '
+          'n’en garde rien, sauf si la connexion de votre interlocuteur est '
+          'coupée : ce que vous lui envoyez attend alors, toujours chiffré et '
+          'en mémoire seulement, au plus 90 secondes, pour lui être remis à '
+          'son retour. Seuls les deux participants détiennent les clés, '
           'créées pour chaque conversation puis oubliées.',
     ]),
     LegalSection('Journal du serveur', [

@@ -35,6 +35,13 @@ bool FlutterWindow::OnCreate() {
       flutter_controller_->engine()->messenger(), GetHandle());
   live_camera_ = std::make_unique<LiveCamera>(
       flutter_controller_->engine()->messenger(), GetHandle());
+  // Textures belong to a plugin registrar: the app's own one.
+  live_video_ = std::make_unique<LiveVideo>(
+      flutter_controller_->engine()->messenger(),
+      FlutterDesktopRegistrarGetTextureRegistrar(
+          flutter_controller_->engine()->GetRegistrarForPlugin(
+              "DismessageLiveVideo")),
+      GetHandle());
   SetChildContent(flutter_controller_->view()->GetNativeWindow());
 
   flutter_controller_->engine()->SetNextFrameCallback([&]() {
@@ -54,6 +61,7 @@ void FlutterWindow::OnDestroy() {
   clipboard_ = nullptr;
   overlay_ = nullptr;
   live_camera_ = nullptr;
+  live_video_ = nullptr;
   if (flutter_controller_) {
     flutter_controller_ = nullptr;
   }
@@ -82,6 +90,9 @@ FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
     return 0;
   }
   if (live_camera_ && live_camera_->HandleWindowMessage(message)) {
+    return 0;
+  }
+  if (live_video_ && live_video_->HandleWindowMessage(message)) {
     return 0;
   }
 

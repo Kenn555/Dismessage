@@ -245,6 +245,52 @@ void main() {
     await waitFor(() => b.sessions.single.remoteDraft == '', reason: 'cleared');
   });
 
+  test('a lost connection: the conversation and its keys go on', () async {
+    // A's connections, to cut the current one as a tunnel would.
+    WebSocketChannel? current;
+    final a = ConnectionService(
+      identity: IdentityService(MemoryStore()),
+      serverUri: Uri.parse('ws://localhost:${server.port}/ws'),
+      connect: (uri) => current = WebSocketChannel.connect(uri),
+      reconnectDelay: const Duration(milliseconds: 400),
+    );
+    services.add(a);
+    await a.start();
+    await waitFor(() => a.status == ServerStatus.online, reason: 'A online');
+    final b = await startClient();
+    await pair(a, b);
+    final withB = a.sessions.single;
+    final withA = b.sessions.single;
+    await waitFor(
+      () => a.isEncrypted(withB) && b.isEncrypted(withA),
+      reason: 'keys',
+    );
+
+    await current!.sink.close();
+    await waitFor(() => withA.peerAway, reason: 'B sees A away');
+    expect(withB.meAway, isTrue);
+    // Both write meanwhile: it waits on the relay, and in A's app.
+    withA.updateDraft('tu es là ?');
+    expect(withA.sendMessage(), isTrue);
+    withB.updateDraft('écrit hors ligne');
+    expect(withB.sendMessage(), isTrue);
+
+    await waitFor(
+      () => !withB.reconnecting && !withA.reconnecting,
+      reason: 'back',
+    );
+    String? last(ChatSession s) => s.messages
+        .whereType<ChatMessage>()
+        .where((m) => !m.fromMe)
+        .lastOrNull
+        ?.text;
+    await waitFor(() => last(withB) == 'tu es là ?', reason: 'B to A');
+    await waitFor(() => last(withA) == 'écrit hors ligne', reason: 'A to B');
+    expect(withA.peerLeft || withB.peerLeft, isFalse);
+    expect(a.sessions, hasLength(1));
+    expect(await a.safetyCode(withB), await b.safetyCode(withA));
+  });
+
   test('leaving the chat notifies the peer', () async {
     final a = await startClient();
     final b = await startClient();

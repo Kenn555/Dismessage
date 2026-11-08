@@ -42,7 +42,7 @@ class SessionTile extends StatelessWidget {
       leading: PresenceAvatar(
         id: session.peer,
         name: name,
-        online: live,
+        online: live && !session.reconnecting,
         radius: 20,
         keyPrefix: 'session-presence',
       ),
@@ -56,6 +56,8 @@ class SessionTile extends StatelessWidget {
       subtitle: Text(
         typing
             ? 'écrit…'
+            : session.reconnecting
+            ? 'Reconnexion…'
             : live
             ? 'En direct'
             : 'Déconnecté',

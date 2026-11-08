@@ -101,6 +101,36 @@ void main() {
     await cleanUp(tester);
   });
 
+  testWidgets('a lost connection shows a waiting bar, not an ending', (
+    tester,
+  ) async {
+    await pumpHome(tester, desktop);
+    await start(tester, 's1', alice);
+    channel.receive(const PeerAwayFrame(sid: 's1'));
+    await tester.pump();
+    await tester.pump();
+    expect(find.byKey(const Key('reconnecting-bar')), findsOneWidget);
+    expect(find.textContaining('a perdu la connexion'), findsOneWidget);
+    expect(find.text('Reconnexion…'), findsOneWidget);
+    expect(find.text("L'interlocuteur s'est déconnecté."), findsNothing);
+
+    channel.receive(const PeerBackFrame(sid: 's1'));
+    await tester.pump();
+    await tester.pump();
+    expect(find.byKey(const Key('reconnecting-bar')), findsNothing);
+    expect(find.text('En direct'), findsOneWidget);
+
+    // My own connection, this time.
+    await channel.server.close();
+    await tester.pump();
+    await tester.pump();
+    expect(
+      find.textContaining('Connexion perdue : reconnexion'),
+      findsOneWidget,
+    );
+    await cleanUp(tester);
+  });
+
   group('narrow screen', () {
     testWidgets('floating avatars from two conversations', (tester) async {
       await pumpHome(tester, phone);

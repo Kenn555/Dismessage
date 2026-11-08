@@ -39,19 +39,49 @@ class ChannelLiveCamera implements LiveCamera {
           'confidentialité de cet appareil.',
     'busy' => 'La caméra est utilisée par une autre application.',
     'stopped' => 'La caméra s’est arrêtée.',
+    'encoder' => 'L’encodage vidéo de cet appareil ne fonctionne pas.',
     _ => 'Caméra indisponible.',
   };
 
   @override
-  Future<Uint8List?> nextFrame(int quality, int side) async {
+  Future<Set<String>> encoders() async {
     try {
-      return await _channel.invokeMethod<Uint8List>('frame', {
-        'quality': quality,
-        'side': side,
+      return {...?await _channel.invokeListMethod<String>('encoders')};
+    } on PlatformException {
+      return const {};
+    } on MissingPluginException {
+      return const {};
+    }
+  }
+
+  @override
+  Future<LiveCameraFrame?> nextFrame(LiveFrameRequest request) async {
+    final Object? result;
+    try {
+      result = await _channel.invokeMethod<Object?>('frame', {
+        'quality': request.quality,
+        'side': request.side,
+        'codec': ?request.codec,
+        'kbps': request.kbps,
+        'key': request.key,
+        'preview': request.preview,
       });
     } on PlatformException catch (e) {
       throw LiveCameraException(_describe(e.code));
     }
+    // JPEG: the bytes alone. Video: the access unit and what goes with it.
+    if (result is Uint8List) return LiveCameraFrame(result);
+    if (result is! Map) return null;
+    final data = result['data'];
+    if (data is! Uint8List || data.isEmpty) return null;
+    final rotation = result['rot'];
+    final preview = result['preview'];
+    return LiveCameraFrame(
+      data,
+      key: result['key'] == true,
+      rotation: rotation is int ? rotation : 0,
+      preview: preview is Uint8List ? preview : null,
+    );
   }
 
   @override

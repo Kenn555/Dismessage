@@ -367,7 +367,7 @@ class _SessionRail extends StatelessWidget {
                       child: PresenceAvatar(
                         id: session.peer,
                         name: name(session),
-                        online: !session.peerLeft,
+                        online: !session.peerLeft && !session.reconnecting,
                         unread: session.unread,
                         selected: session == active,
                         keyPrefix: 'rail-presence',

@@ -14,6 +14,7 @@ import 'services/identity_service.dart';
 import 'services/legal_consent.dart';
 import 'services/live_camera.dart';
 import 'services/live_fullscreen.dart';
+import 'services/live_video.dart';
 import 'services/media_devices.dart';
 import 'services/notifications/chat_notifications.dart';
 import 'services/notifications/system_notifier.dart';
@@ -33,6 +34,8 @@ Future<void> main() async {
     acceptsRequestFrom: contacts.allowsRequestFrom,
     createLiveCamera: () => platformLiveCamera(deviceId: devices.cameraId),
   );
+  // Known before the first camera request: it then leaves at once.
+  platformLiveVideo().decoders().ignore();
   // No connection to the relay (no ID, no IP seen) before the user is of age
   // and has accepted the terms.
   final consent = LegalConsent(store);

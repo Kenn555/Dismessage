@@ -9,6 +9,7 @@ import 'file_storage.dart';
 import 'identity_service.dart';
 import 'live_camera.dart';
 import 'live_link.dart';
+import 'live_video.dart';
 
 enum ServerStatus { offline, connecting, online }
 
@@ -89,9 +90,11 @@ class ConnectionService extends ChangeNotifier {
     ChannelFactory? connect,
     this.reconnectDelay = const Duration(seconds: 2),
     this.connectTimeout = const Duration(seconds: kConnectTimeoutSeconds),
+    this.sessionGrace = const Duration(seconds: kSessionGraceSeconds),
     FileStorage? fileStorage,
     LiveCamera? Function()? createLiveCamera,
     LiveImageDecoder? decodeLiveFrame,
+    LiveVideoCodecs? liveVideo,
     bool Function(String from)? acceptsRequestFrom,
   }) : _acceptsRequestFrom = acceptsRequestFrom,
        _identity = identity,
@@ -99,13 +102,21 @@ class ConnectionService extends ChangeNotifier {
        _connect = connect ?? WebSocketChannel.connect,
        _fileStorage = fileStorage,
        _createLiveCamera = createLiveCamera,
-       _decodeLiveFrame = decodeLiveFrame;
+       _decodeLiveFrame = decodeLiveFrame,
+       _liveVideo = liveVideo;
+
+  /// How long conversations wait for a lost connection to come back (as
+  /// long as the relay keeps them).
+  final Duration sessionGrace;
 
   final IdentityService _identity;
 
   /// The camera shared in live views (the platform's when null).
   final LiveCamera? Function()? _createLiveCamera;
   final LiveImageDecoder? _decodeLiveFrame;
+
+  /// Video decoders of live views (the platform's when null).
+  final LiveVideoCodecs? _liveVideo;
 
   /// Filters incoming chat requests (blocked IDs, "contacts only"): a
   /// refused one is dropped without answer, no dialog, no notification.
@@ -135,6 +146,15 @@ class ConnectionService extends ChangeNotifier {
   bool _awaitingId = false;
   final Map<String, ChatSession> _sessions = {};
   final Map<String, _Secure> _secure = {};
+
+  /// Sealed frames of each conversation written while the connection was
+  /// lost, sent in order once it is resumed.
+  final Map<String, List<String>> _outbox = {};
+  final Map<String, int> _outboxLength = {};
+
+  /// Ends the conversations still waiting for the connection, after
+  /// [kSessionGraceSeconds].
+  Timer? _graceTimer;
   ChatSession? _active;
   ServerStatus _status = ServerStatus.offline;
   bool _disposed = false;
@@ -309,7 +329,81 @@ class ConnectionService extends ChangeNotifier {
   }
 
   /// The conversation's keys only live as long as it does.
-  void _forgetKeys(String sid) => _secure.remove(sid)?.handshake?.cancel();
+  void _forgetKeys(String sid) {
+    _secure.remove(sid)?.handshake?.cancel();
+    _outbox.remove(sid);
+    _outboxLength.remove(sid);
+  }
+
+  /// A sealed frame of [sid]: now, or once the connection is back.
+  void _sendSealed(String sid, Frame frame) {
+    if (_status == ServerStatus.online && _channel != null) {
+      return _send(frame);
+    }
+    final session = _sessions[sid];
+    if (session == null || session.peerLeft) return;
+    final encoded = frame.encode();
+    final length = (_outboxLength[sid] ?? 0) + encoded.length;
+    if (length > kOutboxLength) {
+      // More than a short loss of connection is worth keeping.
+      _outbox.remove(sid);
+      _outboxLength.remove(sid);
+      session.markPeerLeft();
+      return;
+    }
+    (_outbox[sid] ??= []).add(encoded);
+    _outboxLength[sid] = length;
+  }
+
+  /// The connection dropped: conversations wait for it, for
+  /// [kSessionGraceSeconds] (the relay keeps them as long).
+  void _waitForConnection() {
+    var waiting = false;
+    for (final session in _sessions.values) {
+      if (session.peerLeft) continue;
+      session.setAway(me: true);
+      waiting = true;
+    }
+    if (!waiting) return;
+    _graceTimer ??= Timer(sessionGrace, _giveUpWaiting);
+  }
+
+  /// Not back in time: the conversations are over.
+  void _giveUpWaiting() {
+    _graceTimer?.cancel();
+    _graceTimer = null;
+    for (final session in _sessions.values) {
+      if (!session.meAway) continue;
+      _outbox.remove(session.sid);
+      _outboxLength.remove(session.sid);
+      session.markPeerLeft();
+    }
+  }
+
+  /// Registered again: the conversations the relay kept go on, what was
+  /// written meanwhile leaves; the others are over.
+  void _resume(List<String> resumed) {
+    _graceTimer?.cancel();
+    _graceTimer = null;
+    final kept = resumed.toSet();
+    for (final session in _sessions.values) {
+      if (session.peerLeft) continue;
+      final sid = session.sid;
+      if (!kept.contains(sid)) {
+        if (session.meAway) {
+          _outbox.remove(sid);
+          _outboxLength.remove(sid);
+          session.markPeerLeft();
+        }
+        continue;
+      }
+      for (final frame in _outbox.remove(sid) ?? const <String>[]) {
+        _channel?.sink.add(frame);
+      }
+      _outboxLength.remove(sid);
+      session.setAway(me: false);
+    }
+  }
 
   /// Conversation frames are sealed, in order, once the keys are exchanged;
   /// nothing leaves unencrypted.
@@ -319,7 +413,7 @@ class ConnectionService extends ChangeNotifier {
     if (secure == null) return;
     secure.outgoing = secure.outgoing.then((_) async {
       final sealed = await secure.e2e.seal(frame);
-      if (_secure[sid] == secure) _send(sealed);
+      if (_secure[sid] == secure) _sendSealed(sid, sealed);
     });
   }
 
@@ -331,9 +425,13 @@ class ConnectionService extends ChangeNotifier {
   }
 
   void _markAllPeerLeft() {
+    _graceTimer?.cancel();
+    _graceTimer = null;
     for (final session in _sessions.values) {
       session.markPeerLeft();
     }
+    _outbox.clear();
+    _outboxLength.clear();
   }
 
   /// Switches to a brand new ID, given by the relay (online only); the old
@@ -364,8 +462,9 @@ class ConnectionService extends ChangeNotifier {
     final channel = _channel;
     _closeChannel();
     channel?.sink.close();
-    _markAllPeerLeft();
+    // Back soon (the page shown again): the conversations go on.
     _setStatus(ServerStatus.offline);
+    _waitForConnection();
   }
 
   /// The page is shown again after [suspend].
@@ -462,7 +561,7 @@ class ConnectionService extends ChangeNotifier {
       return;
     }
     switch (frame) {
-      case RegisteredFrame(:final id) when id == _me?.id:
+      case RegisteredFrame(:final id, :final sessions) when id == _me?.id:
         final old = _pendingRelease;
         _pendingRelease = null;
         if (old != null) _send(ReleaseFrame(id: old.id, secret: old.secret));
@@ -472,6 +571,7 @@ class ConnectionService extends ChangeNotifier {
         _nextRetryAt = null;
         if (_watched.isNotEmpty) _sendWatch();
         _setStatus(ServerStatus.online);
+        _resume(sessions);
       case PresenceFrame(:final id, :final online):
         if (!_watched.contains(id) || _presence[id] == online) return;
         _presence[id] = online;
@@ -510,11 +610,11 @@ class ConnectionService extends ChangeNotifier {
         _events.add(RequestCancelledEvent(peer));
       case PeerLeftFrame(:final sid):
         // After the frames still being opened.
-        if (_secure.containsKey(sid)) {
-          _inOrder(sid, (_) => _sessions[sid]?.markPeerLeft());
-        } else {
-          _sessions[sid]?.markPeerLeft();
-        }
+        _afterReceived(sid, (session) => session.markPeerLeft());
+      case PeerAwayFrame(:final sid):
+        _afterReceived(sid, (session) => session.setAway(peer: true));
+      case PeerBackFrame(:final sid):
+        _afterReceived(sid, (session) => session.setAway(peer: false));
       case KeyOfferFrame(:final sid) && final offer:
         _inOrder(sid, (secure) async {
           try {
@@ -570,6 +670,7 @@ class ConnectionService extends ChangeNotifier {
       files: _fileStorage,
       createLiveCamera: _createLiveCamera,
       decodeLiveFrame: _decodeLiveFrame,
+      liveVideo: _liveVideo,
     );
     secure.handshake = Timer(const Duration(seconds: kE2eHandshakeSeconds), () {
       if (_sessions[sid] != session || secure.e2e.isReady) return;
@@ -603,11 +704,26 @@ class ConnectionService extends ChangeNotifier {
     _events.add(SessionStartedEvent(session));
   }
 
+  /// [action] on the conversation [sid], after the frames of it still being
+  /// opened.
+  void _afterReceived(String sid, void Function(ChatSession session) action) {
+    if (_secure.containsKey(sid)) {
+      _inOrder(sid, (_) {
+        final session = _sessions[sid];
+        if (session != null) action(session);
+      });
+    } else {
+      final session = _sessions[sid];
+      if (session != null) action(session);
+    }
+  }
+
   void _onClosed() {
     _closeChannel();
     _clearRequest();
-    _markAllPeerLeft();
     _fail('Connexion au serveur perdue.');
+    // A short loss (a tunnel, another network): the conversations wait.
+    _waitForConnection();
   }
 
   /// Records a failed attempt and retries with exponential backoff.
@@ -655,6 +771,7 @@ class ConnectionService extends ChangeNotifier {
   void dispose() {
     _disposed = true;
     _reconnectTimer?.cancel();
+    _graceTimer?.cancel();
     _requestTimer?.cancel();
     final channel = _channel;
     _closeChannel();

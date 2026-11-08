@@ -146,8 +146,12 @@ class PluginVoiceRecorder implements VoiceRecorder {
         "L'enregistrement audio n'est pas pris en charge ici.",
       );
     }
-    _format = format;
-    final (encoder, _, extension, bitRate) = format;
+    final (encoder, _, extension, _) = format;
+    final (sampleRate, bitRate) = recordSettings(
+      format,
+      windows: defaultTargetPlatform == TargetPlatform.windows && !kIsWeb,
+    );
+    _format = (format.$1, format.$2, format.$3, bitRate);
     try {
       await _platform.start(
         _id,
@@ -155,7 +159,7 @@ class PluginVoiceRecorder implements VoiceRecorder {
           device: await _chosenDevice(),
           encoder: encoder,
           bitRate: bitRate,
-          sampleRate: encoder == AudioEncoder.wav ? 8000 : 16000,
+          sampleRate: sampleRate,
           numChannels: 1,
         ),
         path: await newVoicePath(extension),
@@ -219,6 +223,26 @@ class PluginVoiceRecorder implements VoiceRecorder {
     return value.length <= 80 ? value : null;
   }
 }
+
+/// Sample rate and bit rate to record [format] with. The AAC encoder of
+/// Windows (Media Foundation) only takes 44.1 or 48 kHz, at 96 kbit/s or
+/// more: asked for 16 kHz, it refused every microphone
+/// (MF_E_INVALIDMEDIATYPE). The longest message is shorter there, to fit in
+/// [kMaxVoiceBytes] ([VoiceRecorder.maxDurationFor]).
+@visibleForTesting
+(int, int) recordSettings(
+  (AudioEncoder, String, String, int) format, {
+  required bool windows,
+}) {
+  final (encoder, _, _, bitRate) = format;
+  if (encoder == AudioEncoder.wav) return (8000, bitRate);
+  if (windows && encoder == AudioEncoder.aacLc) return (44100, 96000);
+  return (16000, bitRate);
+}
+
+/// Encoders tried in order (see [recordSettings]).
+@visibleForTesting
+List<(AudioEncoder, String, String, int)> get voiceFormats => _formats;
 
 /// Formats a voice duration as "0:07" or "1:42".
 String formatVoiceDuration(Duration d) {

@@ -10,6 +10,7 @@ import 'package:dismessage/services/identity_service.dart';
 import 'package:dismessage/services/image_codec.dart';
 import 'package:dismessage/services/live_fullscreen.dart';
 import 'package:dismessage/services/live_link.dart';
+import 'package:dismessage/services/live_video.dart';
 import 'package:dismessage/widgets/live_view.dart';
 import 'package:dismessage_protocol/dismessage_protocol.dart';
 import 'package:flutter/material.dart';
@@ -67,6 +68,7 @@ void main() {
       connect: (_) => channel,
       createLiveCamera: () => camera,
       decodeLiveFrame: (_) async => null,
+      liveVideo: const NoLiveVideo(),
     );
     overlay = DesktopOverlay(
       connection: connection,

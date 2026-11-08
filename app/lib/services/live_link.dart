@@ -6,6 +6,10 @@ import 'package:dismessage_protocol/dismessage_protocol.dart';
 import 'package:flutter/foundation.dart';
 
 import 'live_camera.dart';
+import 'live_picture.dart';
+import 'live_video.dart';
+
+export 'live_picture.dart';
 
 /// My view of the peer's camera.
 enum LiveWatch {
@@ -32,22 +36,23 @@ enum LiveShare {
   sharing,
 }
 
-/// Decodes a received frame; null if it cannot or must not be shown.
+/// Decodes a received JPEG frame; null if it cannot or must not be shown.
 typedef LiveImageDecoder = Future<ui.Image?> Function(Uint8List jpeg);
 
-/// A decoded frame that knows whether anyone is looking at it: nothing is
-/// decoded for a conversation that is not on screen.
-class LiveImage extends ValueNotifier<ui.Image?> {
+/// The picture of a camera, which knows whether anyone is looking at it:
+/// nothing is decoded for a conversation that is not on screen.
+class LiveImage extends ValueNotifier<LivePicture?> {
   LiveImage() : super(null);
 
   bool get watched => hasListeners;
 
-  /// Takes ownership of [image].
-  void show(ui.Image? image) {
+  /// Takes ownership of [picture].
+  void show(LivePicture? picture) {
     final previous = value;
-    value = image;
+    if (previous == picture) return;
+    value = picture;
     // Widgets hold their own handle (RawImage clones what it paints).
-    previous?.dispose();
+    if (!identical(previous?.image, picture?.image)) previous?.dispose();
   }
 
   @override
@@ -57,28 +62,44 @@ class LiveImage extends ValueNotifier<ui.Image?> {
   }
 }
 
+/// A received video frame waiting to be decoded.
+typedef _Queued = ({
+  int n,
+  Uint8List data,
+  bool key,
+  int rotation,
+  int? sentAt,
+});
+
 /// The live camera view of one conversation, in both directions.
 ///
 /// The camera only ever turns on after [acceptRequest], called from a user's
 /// action, each time: an agreement is never remembered, and the viewer can
 /// neither start nor keep the camera on alone. Frames are ignored unless they
 /// were asked for and agreed to.
+///
+/// Frames are video (H.264) when the viewer can decode it and the owner's
+/// camera can encode it, JPEG otherwise: an older version on either side
+/// still sees JPEG.
 class LiveLink extends ChangeNotifier {
   LiveLink({
     required this.sid,
     required void Function(RelayedFrame frame) send,
     LiveCamera? Function()? createCamera,
     LiveImageDecoder? decode,
+    LiveVideoCodecs? video,
     int Function()? clock,
   }) : _send = send,
        _createCamera = createCamera ?? platformLiveCamera,
        _decode = decode ?? decodeLiveFrame,
+       _video = video ?? platformLiveVideo(),
        _clock = clock ?? _stopwatchClock();
 
   final String sid;
   final void Function(RelayedFrame frame) _send;
   final LiveCamera? Function() _createCamera;
   final LiveImageDecoder _decode;
+  final LiveVideoCodecs _video;
   final int Function() _clock;
 
   static int Function() _stopwatchClock() {
@@ -99,6 +120,10 @@ class LiveLink extends ChangeNotifier {
 
   /// The last frame of the peer's camera.
   final LiveImage image = LiveImage();
+
+  /// Images shown so far, each one (a texture keeps its picture while its
+  /// image changes): for `check_windows_camera`.
+  final ValueNotifier<int> shown = ValueNotifier(0);
   Timer? _requestTimer;
   int _lastFrame = 0;
   int? _pendingFrame;
@@ -106,15 +131,27 @@ class LiveLink extends ChangeNotifier {
   int? _pendingAt;
   bool _decoding = false;
   LivePacer _pacer = LivePacer();
+
   /// Decoded frames waiting for their turn, with when to show them.
-  final List<(ui.Image, int)> _held = [];
+  final List<(LivePicture, int)> _held = [];
   Timer? _holdTimer;
+
+  /// Codecs offered in my request, and the one the owner chose (null: JPEG).
+  List<String> _offered = const [];
+  String? _codec;
+
+  /// The video codec of the frames shown, null for JPEG.
+  String? get codec => _codec;
+  LiveVideoDecoder? _decoder;
+  final List<_Queued> _queue = [];
+  bool _needKey = true;
+  int? _keyAskedAt;
 
   /// Asks to see the peer's camera.
   void request() {
     if (_closed || _watch != LiveWatch.idle) return;
     _setWatch(LiveWatch.requesting);
-    _send(LiveRequestFrame(sid: sid));
+    _sendRequest();
     _requestTimer = Timer(
       const Duration(seconds: kLiveRequestTimeoutSeconds),
       () {
@@ -123,6 +160,28 @@ class LiveLink extends ChangeNotifier {
         _tell('Pas de réponse à votre demande de caméra.');
       },
     );
+  }
+
+  /// With the video codecs this device decodes: the owner picks one if its
+  /// camera can encode it. At once when they are known already (a
+  /// [SynchronousFuture]).
+  void _sendRequest() {
+    void send(Set<String> codecs) {
+      if (_closed || _watch != LiveWatch.requesting) return;
+      _offered = [
+        for (final codec in codecs)
+          if (codec == kLiveCodecH264) codec,
+      ];
+      _send(LiveRequestFrame(sid: sid, codecs: _offered));
+    }
+
+    Future<Set<String>> codecs;
+    try {
+      codecs = _video.decoders();
+    } catch (_) {
+      codecs = SynchronousFuture(const {});
+    }
+    codecs.then(send, onError: (Object _) => send(const {}));
   }
 
   /// The view goes to full screen, or comes back: the peer's camera follows,
@@ -147,25 +206,43 @@ class LiveLink extends ChangeNotifier {
     _pendingAt = null;
     _lastFrame = 0;
     _pacer = LivePacer();
+    _queue.clear();
+    _codec = null;
+    _offered = const [];
+    _needKey = true;
+    _keyAskedAt = null;
+    _closeDecoder();
     _dropHeld();
     image.show(null);
     _setWatch(LiveWatch.idle);
   }
 
+  void _closeDecoder() {
+    final decoder = _decoder;
+    _decoder = null;
+    if (decoder != null) unawaited(decoder.close().catchError((_) {}));
+  }
+
   void _dropHeld() {
     _holdTimer?.cancel();
     _holdTimer = null;
-    for (final (frame, _) in _held) {
-      frame.dispose();
+    for (final (picture, _) in _held) {
+      picture.dispose();
     }
     _held.clear();
   }
 
-  /// Shows [decoded] when its turn comes, to keep a steady pace.
-  void _present(ui.Image decoded, int? sentAt) {
+  /// Shows [picture] when its turn comes, to keep a steady pace.
+  void _present(LivePicture picture, int? sentAt) {
+    if (picture.image == null) {
+      // A texture is drawn by its decoder as soon as decoded.
+      image.show(picture);
+      shown.value++;
+      return;
+    }
     final now = _clock();
     final hold = sentAt == null ? 0 : _pacer.holdFor(sentAt, now);
-    _held.add((decoded, now + hold));
+    _held.add((picture, now + hold));
     // Too far behind: the oldest give way.
     while (_held.length > kLiveMaxHeldFrames) {
       _held.removeAt(0).$1.dispose();
@@ -179,17 +256,17 @@ class LiveLink extends ChangeNotifier {
     _holdTimer?.cancel();
     _holdTimer = null;
     final now = _clock();
-    ui.Image? due;
+    LivePicture? due;
     while (_held.isNotEmpty && _held.first.$2 <= now) {
       due?.dispose();
       due = _held.removeAt(0).$1;
     }
-    if (due != null) image.show(due);
+    if (due != null) {
+      image.show(due);
+      shown.value++;
+    }
     if (_held.isEmpty) return;
-    _holdTimer = Timer(
-      Duration(milliseconds: _held.first.$2 - now),
-      _showDue,
-    );
+    _holdTimer = Timer(Duration(milliseconds: _held.first.$2 - now), _showDue);
   }
 
   void _setWatch(LiveWatch next) {
@@ -198,9 +275,9 @@ class LiveLink extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Only the latest frame matters: one being decoded makes the next ones
-  /// wait, and a newer one replaces them. The acknowledgement says up to where
-  /// the camera owner may go on.
+  /// JPEG: only the latest frame matters. One being decoded makes the next
+  /// ones wait, and a newer one replaces them. The acknowledgement says up to
+  /// where the camera owner may go on.
   Future<void> _decodePending() async {
     if (_decoding) return;
     _decoding = true;
@@ -221,7 +298,7 @@ class LiveLink extends ChangeNotifier {
             decoded?.dispose();
             return;
           }
-          if (decoded != null) _present(decoded, sentAt);
+          if (decoded != null) _present(LivePicture.image(decoded), sentAt);
         }
         if (_watch == LiveWatch.watching) {
           _send(LiveAckFrame(sid: sid, n: frame));
@@ -230,6 +307,93 @@ class LiveLink extends ChangeNotifier {
     } finally {
       _decoding = false;
     }
+  }
+
+  /// Video: frames need the ones before them. Each is decoded in order; one
+  /// that cannot be (the view was hidden, a broken frame, too far behind)
+  /// makes the next ones wait for a key frame, which is asked for.
+  void _receiveVideo(_Queued frame) {
+    if (!image.watched) {
+      // Nothing decoded off screen: the view will start from a key frame.
+      _needKey = true;
+      _queue.clear();
+      _send(LiveAckFrame(sid: sid, n: frame.n));
+      return;
+    }
+    if (frame.key) _needKey = false;
+    if (_needKey) {
+      _askKey();
+      _send(LiveAckFrame(sid: sid, n: frame.n));
+      return;
+    }
+    _queue.add(frame);
+    if (_queue.length > kLiveMaxQueuedFrames) {
+      // Decoding cannot keep up: start again from a key frame.
+      _queue.clear();
+      _restartVideo();
+      _send(LiveAckFrame(sid: sid, n: frame.n));
+      return;
+    }
+    unawaited(_decodeVideo());
+  }
+
+  bool _decodingVideo = false;
+
+  Future<void> _decodeVideo() async {
+    if (_decodingVideo) return;
+    _decodingVideo = true;
+    try {
+      while (_queue.isNotEmpty && !_closed) {
+        final frame = _queue.removeAt(0);
+        final codec = _codec;
+        if (codec == null || _watch != LiveWatch.watching) return;
+        final decoder = _decoder ??= _video.create(codec);
+        if (decoder == null) {
+          stopWatching();
+          _tell('Impossible d’afficher la vidéo sur cet appareil.');
+          return;
+        }
+        LivePicture? picture;
+        try {
+          picture = await decoder.decode(
+            frame.data,
+            key: frame.key,
+            rotation: frame.rotation,
+          );
+        } catch (_) {
+          if (_decoder == decoder) _restartVideo();
+        }
+        if (_closed || _watch != LiveWatch.watching) {
+          picture?.dispose();
+          return;
+        }
+        _send(LiveAckFrame(sid: sid, n: frame.n));
+        if (_decoder != decoder) {
+          // Restarted meanwhile: wait for the key frame.
+          picture?.dispose();
+          continue;
+        }
+        if (picture != null) _present(picture, frame.sentAt);
+      }
+    } finally {
+      _decodingVideo = false;
+    }
+  }
+
+  /// A new decoder, from the next key frame.
+  void _restartVideo() {
+    _closeDecoder();
+    _queue.clear();
+    _needKey = true;
+    _askKey();
+  }
+
+  void _askKey() {
+    final now = _clock();
+    final asked = _keyAskedAt;
+    if (asked != null && now - asked < kLiveKeyRequestMs) return;
+    _keyAskedAt = now;
+    _send(LiveKeyFrame(sid: sid));
   }
 
   // Camera owner side.
@@ -241,6 +405,14 @@ class LiveLink extends ChangeNotifier {
   final LiveImage ownImage = LiveImage();
   LiveCamera? _camera;
   LiveFlow? _flow;
+
+  /// Video codecs the viewer offered, and the one I send in (null: JPEG).
+  List<String> _peerCodecs = const [];
+  String? _sharedCodec;
+
+  /// The codec my camera sends in, null for JPEG.
+  String? get sharedCodec => _sharedCodec;
+  bool _wantKey = false;
 
   /// Changes whenever the camera is stopped: a loop still running sees it.
   int _shareRun = 0;
@@ -260,8 +432,13 @@ class LiveLink extends ChangeNotifier {
     if (camera == null) {
       return _failShare('Aucune caméra sur cet appareil.');
     }
+    String? codec;
     try {
       await camera.open();
+      if (run == _shareRun && _peerCodecs.isNotEmpty) {
+        final encoders = await camera.encoders();
+        codec = _peerCodecs.where(encoders.contains).firstOrNull;
+      }
     } catch (e) {
       if (run == _shareRun) _failShare(_describe(e));
       return;
@@ -271,9 +448,13 @@ class LiveLink extends ChangeNotifier {
       await camera.close();
       return;
     }
+    _sharedCodec = codec;
+    final flow = _flow = LiveFlow(video: codec != null);
+    // Video affords a larger small view.
+    if (codec != null) unawaited(camera.setCaptureSide(flow.smallSide));
     _setShare(LiveShare.sharing);
-    _send(LiveAcceptFrame(sid: sid));
-    await _shareLoop(run, camera);
+    _send(LiveAcceptFrame(sid: sid, codec: codec));
+    await _shareLoop(run, camera, flow);
   }
 
   /// Refuses the peer's request.
@@ -304,6 +485,8 @@ class LiveLink extends ChangeNotifier {
     final camera = _camera;
     _camera = null;
     _flow = null;
+    _sharedCodec = null;
+    _wantKey = false;
     _wake();
     ownImage.show(null);
     _setShare(LiveShare.idle);
@@ -327,8 +510,10 @@ class LiveLink extends ChangeNotifier {
   /// When nothing can be done yet: about one image of the target rate.
   static const _retryMs = 1000 ~/ kLiveTargetFps;
 
-  Future<void> _shareLoop(int run, LiveCamera camera) async {
-    final flow = _flow = LiveFlow();
+  Future<void> _shareLoop(int run, LiveCamera camera, LiveFlow flow) async {
+    final codec = _sharedCodec;
+    // A new encoder starts with a key frame; asking costs nothing.
+    _wantKey = codec != null;
     var count = 0;
     while (run == _shareRun) {
       if (!flow.canSend(_clock())) {
@@ -336,52 +521,74 @@ class LiveLink extends ChangeNotifier {
         await _sleepFor(_retryMs);
         continue;
       }
-      final Uint8List? jpeg;
+      final LiveCameraFrame? frame;
       try {
-        jpeg = await camera
-            .nextFrame(flow.quality, flow.side)
+        frame = await camera
+            .nextFrame(
+              LiveFrameRequest(
+                side: flow.side,
+                quality: flow.quality,
+                codec: codec,
+                kbps: flow.kbps,
+                key: _wantKey,
+                // The small preview does not need every frame.
+                preview: codec != null && count % 8 == 0 && ownImage.watched,
+              ),
+            )
             .timeout(const Duration(seconds: kLiveCameraTimeoutSeconds));
       } catch (e) {
         if (run == _shareRun) _failShare(_describe(e));
         return;
       }
       if (run != _shareRun) return;
-      if (jpeg == null || jpeg.isEmpty) {
+      if (frame == null || frame.data.isEmpty) {
         await _sleepFor(_retryMs);
         continue;
       }
-      if (jpeg.length > kMaxLiveFrameBytes) {
+      if (frame.data.length > kMaxLiveFrameBytes) {
         flow.tooLarge();
+        // Video: the next frames would need this one.
+        if (codec != null) _wantKey = true;
         // Not at once: this would never give the app a chance to run.
         await _sleepFor(_retryMs);
         continue;
       }
+      if (frame.key) _wantKey = false;
       final now = _clock();
       _send(
         LiveVideoFrame(
           sid: sid,
           n: flow.sent(now),
-          data: base64Encode(jpeg),
+          data: base64Encode(frame.data),
           sentAt: now,
+          key: codec != null && frame.key,
+          rotation: codec != null ? frame.rotation : 0,
         ),
       );
-      // The small preview does not need every frame.
-      if (count++ % 4 == 0 && ownImage.watched) unawaited(_showOwn(run, jpeg));
+      if (codec == null) {
+        if (count % 4 == 0 && ownImage.watched) {
+          unawaited(_showOwn(run, frame.data, 0));
+        }
+      } else if (frame.preview case final preview?) {
+        unawaited(_showOwn(run, preview, frame.rotation));
+      }
+      count++;
     }
   }
 
-  Future<void> _showOwn(int run, Uint8List jpeg) async {
+  Future<void> _showOwn(int run, Uint8List jpeg, int rotation) async {
     ui.Image? decoded;
     try {
       decoded = await _decode(jpeg);
     } catch (_) {
       return;
     }
+    if (decoded == null) return;
     if (run != _shareRun || _closed) {
-      decoded?.dispose();
+      decoded.dispose();
       return;
     }
-    ownImage.show(decoded);
+    ownImage.show(LivePicture.image(decoded, rotation: rotation));
   }
 
   Future<void> _sleepFor(int ms) {
@@ -408,7 +615,7 @@ class LiveLink extends ChangeNotifier {
   void receive(RelayedFrame frame) {
     if (_closed) return;
     switch (frame) {
-      case LiveRequestFrame():
+      case LiveRequestFrame(:final codecs):
         if (_share != LiveShare.idle) return;
         final declined = _declinedAt;
         if (declined != null &&
@@ -416,6 +623,7 @@ class LiveLink extends ChangeNotifier {
           _send(LiveEndFrame(sid: sid, reason: LiveEndReason.declined));
           return;
         }
+        _peerCodecs = codecs;
         _setShare(LiveShare.asked);
       case LiveStopFrame():
         // The request is withdrawn, or the view closed.
@@ -424,10 +632,18 @@ class LiveLink extends ChangeNotifier {
         } else if (_share != LiveShare.idle) {
           _turnOff();
         }
-      case LiveAcceptFrame():
+      case LiveAcceptFrame(:final codec):
         if (_watch != LiveWatch.requesting) return;
         _requestTimer?.cancel();
         _requestTimer = null;
+        if (codec != null && !_offered.contains(codec)) {
+          // Not what was offered: nothing could be shown.
+          stopWatching();
+          _tell('Format vidéo inconnu : mettez Dismessage à jour.');
+          return;
+        }
+        _codec = codec;
+        _needKey = true;
         _setWatch(LiveWatch.watching);
       case LiveEndFrame(:final reason):
         if (_watch == LiveWatch.idle) return;
@@ -441,21 +657,37 @@ class LiveLink extends ChangeNotifier {
       case LiveSizeFrame(:final side):
         final flow = _flow;
         if (flow == null) return;
-        final wanted = side.clamp(kLiveMaxSide, kLiveFullSide);
-        flow.maxSide = wanted;
-        unawaited(_camera?.setCaptureSide(wanted));
-      case LiveVideoFrame(:final n, :final data, :final sentAt):
+        flow.maxSide = side.clamp(kLiveMaxSide, kLiveFullSide);
+        unawaited(_camera?.setCaptureSide(flow.maxSide));
+      case LiveKeyFrame():
+        if (_flow != null && _sharedCodec != null) _wantKey = true;
+      case LiveVideoFrame(
+        :final n,
+        :final data,
+        :final sentAt,
+        :final key,
+        :final rotation,
+      ):
         // Only what was asked for and agreed to.
         if (_watch != LiveWatch.watching || n <= _lastFrame) return;
-        final Uint8List jpeg;
+        final Uint8List bytes;
         try {
-          jpeg = base64Decode(data);
+          bytes = base64Decode(data);
         } on FormatException {
           return;
         }
         _lastFrame = n;
+        if (_codec != null) {
+          return _receiveVideo((
+            n: n,
+            data: bytes,
+            key: key,
+            rotation: rotation,
+            sentAt: sentAt,
+          ));
+        }
         _pendingFrame = n;
-        _pendingJpeg = jpeg;
+        _pendingJpeg = bytes;
         _pendingAt = sentAt;
         unawaited(_decodePending());
       case LiveAckFrame(:final n):
@@ -495,6 +727,7 @@ class LiveLink extends ChangeNotifier {
     _closed = true;
     _notices.close();
     image.dispose();
+    shown.dispose();
     ownImage.dispose();
     super.dispose();
   }

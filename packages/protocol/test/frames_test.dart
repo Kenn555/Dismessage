@@ -7,7 +7,7 @@ const b = '123456789';
 void main() {
   final samples = <Frame>[
     const RegisterFrame(id: a, secret: 's3cr3t'),
-    const RegisteredFrame(id: a),
+    const RegisteredFrame(id: a, sessions: ['sid1', 'sid2']),
     const IdTakenFrame(id: a),
     const ReleaseFrame(id: a, secret: 's3cr3t'),
     const IdRequestFrame(),
@@ -71,13 +71,21 @@ void main() {
       size: 1234567,
       reply: 'aaaabbbbccccdddd',
     ),
-    const LiveRequestFrame(sid: 'sid1'),
-    const LiveAcceptFrame(sid: 'sid1'),
+    const LiveRequestFrame(sid: 'sid1', codecs: [kLiveCodecH264]),
+    const LiveAcceptFrame(sid: 'sid1', codec: kLiveCodecH264),
     const LiveStopFrame(sid: 'sid1'),
     const LiveEndFrame(sid: 'sid1', reason: LiveEndReason.declined),
-    const LiveVideoFrame(sid: 'sid1', n: 7, data: '/9j/4AAQ', sentAt: 1234),
+    const LiveVideoFrame(
+      sid: 'sid1',
+      n: 7,
+      data: 'AAAAAWdC',
+      sentAt: 1234,
+      key: true,
+      rotation: 270,
+    ),
     const LiveSizeFrame(sid: 'sid1', side: kLiveFullSide),
     const LiveAckFrame(sid: 'sid1', n: 7),
+    const LiveKeyFrame(sid: 'sid1'),
     const FileAcceptFrame(sid: 'sid1', fid: '0011223344556677'),
     const FileCancelFrame(sid: 'sid1', fid: '0011223344556677'),
     const FileChunkFrame(
@@ -87,6 +95,8 @@ void main() {
       data: 'JVBERi0xLjQ=',
     ),
     const FileAckFrame(sid: 'sid1', fid: '0011223344556677', count: 4),
+    const PeerAwayFrame(sid: 'sid1'),
+    const PeerBackFrame(sid: 'sid1'),
     const PresenceWatchFrame(ids: [a, b]),
     const PresenceFrame(id: b, online: true),
     const ErrorFrame(code: 'bad_frame', message: 'oops'),
@@ -115,7 +125,10 @@ void main() {
       group: 'aaaabbbbccccdddd',
     );
     expect((Frame.decode(file.encode()) as FileOfferFrame).group, file.group);
-    expect((Frame.decode(image.encode()) as ImageOfferFrame).group, image.group);
+    expect(
+      (Frame.decode(image.encode()) as ImageOfferFrame).group,
+      image.group,
+    );
   });
 
   for (final frame in samples) {
@@ -127,6 +140,32 @@ void main() {
   }
 
   group('optional fields', () {
+    test('registered from an older relay resumes nothing', () {
+      final frame =
+          Frame.decode('{"t":"registered","id":"$a"}') as RegisteredFrame;
+      expect(frame.sessions, isEmpty);
+      expect(frame.toJson().containsKey('sessions'), isFalse);
+    });
+
+    test('live frames of older versions are JPEG, upright', () {
+      final request =
+          Frame.decode('{"t":"live_request","sid":"s"}') as LiveRequestFrame;
+      expect(request.codecs, isEmpty);
+      expect(request.toJson().containsKey('codecs'), isFalse);
+      final accept =
+          Frame.decode('{"t":"live_accept","sid":"s"}') as LiveAcceptFrame;
+      expect(accept.codec, isNull);
+      expect(accept.toJson().containsKey('codec'), isFalse);
+      final frame =
+          Frame.decode('{"t":"live_frame","sid":"s","n":1,"data":"AA=="}')
+              as LiveVideoFrame;
+      expect(frame.key, isFalse);
+      expect(frame.rotation, 0);
+      expect(frame.toJson().keys, containsAll(['sid', 'n', 'data']));
+      expect(frame.toJson().containsKey('key'), isFalse);
+      expect(frame.toJson().containsKey('rot'), isFalse);
+    });
+
     test('register from an older version is protocol version 1', () {
       const raw = '{"t":"register","id":"$a","secret":"s"}';
       expect((Frame.decode(raw) as RegisterFrame).v, 1);
@@ -237,8 +276,28 @@ void main() {
       'live frame number': '{"t":"live_frame","sid":"s","n":0,"data":"AA=="}',
       'live ack number': '{"t":"live_ack","sid":"s","n":-1}',
       'live size': '{"t":"live_size","sid":"s","side":0}',
-      'live frame time': '{"t":"live_frame","sid":"s","n":1,"data":"AA==","at":-1}',
+      'live frame time':
+          '{"t":"live_frame","sid":"s","n":1,"data":"AA==","at":-1}',
       'live end reason': '{"t":"live_end","sid":"s","reason":"parce que"}',
+      'live codec name': '{"t":"live_accept","sid":"s","codec":"H.264"}',
+      'live codec too long':
+          '{"t":"live_accept","sid":"s","codec":"${'a' * (kMaxLiveCodecLength + 1)}"}',
+      'live codecs not a list':
+          '{"t":"live_request","sid":"s","codecs":"h264"}',
+      'live codecs too many':
+          '{"t":"live_request","sid":"s","codecs":[${List.filled(kMaxLiveCodecs + 1, '"h264"').join(',')}]}',
+      'live codecs entry': '{"t":"live_request","sid":"s","codecs":[1]}',
+      'live key not a boolean':
+          '{"t":"live_frame","sid":"s","n":1,"data":"AA==","key":1}',
+      'registered sessions not a list':
+          '{"t":"registered","id":"$a","sessions":"sid1"}',
+      'registered sessions entry':
+          '{"t":"registered","id":"$a","sessions":[""]}',
+      'registered too many sessions':
+          '{"t":"registered","id":"$a","sessions":[${List.filled(kMaxResumedSessions + 1, '"s"').join(',')}]}',
+      'peer away without session': '{"t":"peer_away"}',
+      'live rotation':
+          '{"t":"live_frame","sid":"s","n":1,"data":"AA==","rot":45}',
       'chunk index negative':
           '{"t":"file_chunk","sid":"s","fid":"0011223344556677","i":-1,"data":"AA=="}',
       'chunk index beyond max file':
