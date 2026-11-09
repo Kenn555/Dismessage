@@ -246,6 +246,33 @@ const int kLiveDeclineCooldownSeconds = 10;
 /// The camera must give a frame within this delay, or the sharing stops.
 const int kLiveCameraTimeoutSeconds = 5;
 
+// Sound of a live view: the camera owner's microphone, with the camera, when
+// the viewer can play it (`live_request.audio`) and the owner allows it.
+
+/// IMA ADPCM, 16 kHz mono, 4 bits per sample: each packet stands alone
+/// (it starts with the encoder's state), 64 kbit/s, a quarter of raw PCM.
+const String kLiveAudioAdpcm = 'adpcm';
+
+/// Samples per second of the sound, captured and played.
+const int kLiveAudioSampleRate = 16000;
+
+/// Sound per packet, in milliseconds: shorter adds frames, longer delay.
+const int kLiveAudioPacketMs = 40;
+const int kLiveAudioPacketSamples =
+    kLiveAudioSampleRate * kLiveAudioPacketMs ~/ 1000;
+
+/// Sound gathered before playing starts (again, after the network ran dry):
+/// evens out the network's irregularities.
+const int kLiveAudioStartMs = 120;
+
+/// Sound waiting to be played at most: beyond, a packet is dropped, so that
+/// the delay never grows.
+const int kLiveAudioMaxBufferMs = 400;
+
+/// Largest sound packet (a 40 ms ADPCM packet is 324 bytes).
+const int kMaxLiveAudioBytes = 4096;
+const int kMaxLiveAudioDataLength = (kMaxLiveAudioBytes + 2) ~/ 3 * 4;
+
 // Relay rate limits (token buckets: a burst, then a sustained rate). The
 // throughput ones slow a client down; the others refuse with `rate_limited`.
 

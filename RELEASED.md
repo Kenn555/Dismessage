@@ -8,15 +8,18 @@ Les nouveautés de chaque version de Dismessage, la plus récente en premier.
 
 ### À lire avant de mettre à jour
 
-- La vue caméra en vidéo et la reprise après une coupure ne marchent que si **les deux** utilisateurs ont la version 0.5.0. Avec une version plus ancienne, tout continue de marcher comme avant.
+- La vue caméra en vidéo, son micro et la reprise après une coupure ne marchent que si **les deux** utilisateurs ont la version 0.5.0. Avec une version plus ancienne, tout continue de marcher comme avant (la vue caméra reste muette).
 
 ### Nouveautés
+
+- **Le son dans la vue caméra.** Quand votre interlocuteur demande à voir votre caméra, il peut désormais aussi vous entendre : votre micro (celui choisi dans les Réglages) s'allume avec la caméra. Vous pouvez répondre « Sans le micro » pour ne partager que l'image, et couper ou rétablir le micro à tout moment depuis la barre rouge « … voit votre caméra ». De son côté, un bouton haut-parleur sur la vue coupe ou rétablit le son, et une icône montre quand votre micro est coupé. Pour un appel dans les deux sens, chacun demande à voir la caméra de l'autre. Sous Windows, l'écho n'est pas supprimé : utilisez de préférence un casque ou des écouteurs.
 
 - **Une petite coupure ne termine plus la conversation.** Si votre connexion (ou celle de votre interlocuteur) tombe un instant (tunnel, passage du Wi-Fi à la 4G, ordinateur en veille quelques secondes), la conversation reste ouverte avec un bandeau « Reconnexion… ». Vous pouvez continuer d'écrire : vos messages partent dès le retour de la connexion, et ceux de votre interlocuteur vous attendent. Sans retour au bout de 90 secondes, la conversation se termine comme avant. La vue caméra, elle, s'arrête pendant la coupure.
 
 ### Sécurité et vie privée
 
 - Pendant une coupure de votre interlocuteur, ce que vous lui envoyez attend sur le serveur au plus 90 secondes, toujours chiffré de bout en bout et en mémoire seulement. La politique de confidentialité le précise.
+- Le micro de la vue caméra suit les mêmes règles que la caméra : rien n'est entendu sans votre accord, demandé à chaque fois, la question dit clairement que le micro est concerné, il s'éteint avec la caméra (y compris quand l'application est réduite), et le son est chiffré de bout en bout sans jamais être enregistré. La politique de confidentialité le précise.
 
 ### Améliorations
 

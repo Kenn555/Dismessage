@@ -146,10 +146,21 @@ sealed class Frame {
         'live_request' => LiveRequestFrame(
           sid: r.str('sid'),
           codecs: r.liveCodecs(),
+          audio: r.liveCodecs('audio'),
         ),
         'live_accept' => LiveAcceptFrame(
           sid: r.str('sid'),
           codec: r.optionalLiveCodec('codec'),
+          audio: r.optionalLiveCodec('audio'),
+        ),
+        'live_audio' => LiveAudioFrame(
+          sid: r.str('sid'),
+          n: r.positive('n'),
+          data: r.base64('data', kMaxLiveAudioDataLength),
+        ),
+        'live_mute' => LiveMuteFrame(
+          sid: r.str('sid'),
+          muted: r.boolean('muted'),
         ),
         'live_stop' => LiveStopFrame(sid: r.str('sid')),
         'live_end' => LiveEndFrame(
@@ -682,31 +693,75 @@ class FileAckFrame extends RelayedFrame {
 /// Viewer → camera owner: asks to see the owner's camera. Nothing is filmed
 /// until the owner agrees ([LiveAcceptFrame]).
 class LiveRequestFrame extends RelayedFrame {
-  const LiveRequestFrame({required super.sid, this.codecs = const []});
+  const LiveRequestFrame({
+    required super.sid,
+    this.codecs = const [],
+    this.audio = const [],
+  });
 
   /// Video codecs the viewer can decode ([kLiveCodecH264]…), besides JPEG
   /// which every version shows. Empty for older versions.
   final List<String> codecs;
+
+  /// Sound codecs the viewer can play ([kLiveAudioAdpcm]): the owner may then
+  /// share their microphone too. Empty: no sound (older versions).
+  final List<String> audio;
   @override
   String get type => 'live_request';
   @override
   Map<String, Object?> fieldsToJson() => {
     'sid': sid,
     if (codecs.isNotEmpty) 'codecs': codecs,
+    if (audio.isNotEmpty) 'audio': audio,
   };
 }
 
 /// Camera owner → viewer: agreed, and the camera is on; frames follow.
 class LiveAcceptFrame extends RelayedFrame {
-  const LiveAcceptFrame({required super.sid, this.codec});
+  const LiveAcceptFrame({required super.sid, this.codec, this.audio});
 
   /// The video codec of the frames, one of [LiveRequestFrame.codecs]; null for
   /// JPEG.
   final String? codec;
+
+  /// The sound codec of [LiveAudioFrame]s, one of [LiveRequestFrame.audio];
+  /// null: no sound (refused, no microphone, older version).
+  final String? audio;
   @override
   String get type => 'live_accept';
   @override
-  Map<String, Object?> fieldsToJson() => {'sid': sid, 'codec': ?codec};
+  Map<String, Object?> fieldsToJson() => {
+    'sid': sid,
+    'codec': ?codec,
+    'audio': ?audio,
+  };
+}
+
+/// Camera owner → viewer: sound packet [n] (from 1) of the microphone, in
+/// base64, in the codec chosen by [LiveAcceptFrame.audio].
+class LiveAudioFrame extends RelayedFrame {
+  const LiveAudioFrame({
+    required super.sid,
+    required this.n,
+    required this.data,
+  });
+  final int n;
+  final String data;
+  @override
+  String get type => 'live_audio';
+  @override
+  Map<String, Object?> fieldsToJson() => {'sid': sid, 'n': n, 'data': data};
+}
+
+/// Camera owner → viewer: the microphone was muted, or is back. Nothing is
+/// sent while it is muted.
+class LiveMuteFrame extends RelayedFrame {
+  const LiveMuteFrame({required super.sid, required this.muted});
+  final bool muted;
+  @override
+  String get type => 'live_mute';
+  @override
+  Map<String, Object?> fieldsToJson() => {'sid': sid, 'muted': muted};
 }
 
 /// Viewer → camera owner: withdraws the request, or closes the view. The
@@ -1019,17 +1074,18 @@ class _Reader {
     return value;
   }
 
-  /// `codecs` of `live_request`: empty when absent (older versions).
-  List<String> liveCodecs() {
-    final value = json['codecs'];
+  /// `codecs` or `audio` of `live_request`: empty when absent (older
+  /// versions).
+  List<String> liveCodecs([String key = 'codecs']) {
+    final value = json[key];
     if (value == null) return const [];
     if (value is! List || value.length > kMaxLiveCodecs) {
-      throw const FrameFormatException('"codecs" must be a short list');
+      throw FrameFormatException('"$key" must be a short list');
     }
     return [
       for (var i = 0; i < value.length; i++)
         _Reader({'c': value[i]}).optionalLiveCodec('c') ??
-            (throw const FrameFormatException('"codecs" must be names')),
+            (throw FrameFormatException('"$key" must be names')),
     ];
   }
 

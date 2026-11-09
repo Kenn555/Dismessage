@@ -80,11 +80,15 @@ class LiveViewCard extends StatelessWidget {
     required this.image,
     required this.onClose,
     this.onFullscreen,
+    this.sound,
   });
 
   final ValueListenable<LivePicture?> image;
   final VoidCallback onClose;
   final VoidCallback? onFullscreen;
+
+  /// The peer's sound, when they share their microphone.
+  final LiveSound? sound;
 
   @override
   Widget build(BuildContext context) {
@@ -114,6 +118,7 @@ class LiveViewCard extends StatelessWidget {
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
+                if (sound case final sound?) _SoundButton(sound: sound),
                 if (onFullscreen != null)
                   _LiveViewButton(
                     key: const Key('live-fullscreen-button'),
@@ -134,6 +139,37 @@ class LiveViewCard extends StatelessWidget {
       ),
     );
   }
+}
+
+/// Mutes or unmutes the peer's sound; says when they muted their microphone.
+class _SoundButton extends StatelessWidget {
+  const _SoundButton({required this.sound});
+
+  final LiveSound sound;
+
+  @override
+  Widget build(BuildContext context) => ListenableBuilder(
+    listenable: sound,
+    builder: (context, _) {
+      if (!sound.available) return const SizedBox.shrink();
+      if (sound.peerMuted) {
+        return const Padding(
+          key: Key('live-peer-muted'),
+          padding: EdgeInsets.all(8),
+          child: Tooltip(
+            message: 'Micro coupé',
+            child: Icon(Icons.mic_off_rounded, size: 18, color: Colors.white),
+          ),
+        );
+      }
+      return _LiveViewButton(
+        key: const Key('live-sound'),
+        tooltip: sound.on ? 'Couper le son' : 'Rétablir le son',
+        icon: sound.on ? Icons.volume_up_rounded : Icons.volume_off_rounded,
+        onPressed: sound.toggle,
+      );
+    },
+  );
 }
 
 /// A small button over the camera view.

@@ -9,6 +9,7 @@ project(runner LANGUAGES CXX)
 add_executable(${BINARY_NAME} WIN32
   "clipboard.cpp"
   "flutter_window.cpp"
+  "live_audio.cpp"
   "live_camera.cpp"
   "live_video.cpp"
   "main.cpp"
@@ -46,6 +47,9 @@ target_link_libraries(${BINARY_NAME} PRIVATE "WindowsApp.lib")
 # the H.264 codecs of Media Foundation encode and decode video.
 target_link_libraries(${BINARY_NAME} PRIVATE "mfplat.lib" "mf.lib" "mfreadwrite.lib" "mfuuid.lib" "windowscodecs.lib" "wmcodecdspuuid.lib")
 target_include_directories(${BINARY_NAME} PRIVATE "${CMAKE_SOURCE_DIR}")
+
+# The sound of live views: waveOut plays it.
+target_link_libraries(${BINARY_NAME} PRIVATE "winmm.lib")
 
 # Run the Flutter tool portions of the build. This must not be removed.
 add_dependencies(${BINARY_NAME} flutter_assemble)

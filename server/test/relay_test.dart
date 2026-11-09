@@ -629,6 +629,36 @@ void main() {
       },
     );
 
+    test('a live view with sound reaches the peer only', () async {
+      final a = await (await client()).register(idA);
+      final b = await (await client()).register(idB);
+      final c = await (await client()).register(idC);
+      final sid = await pair(a, b);
+
+      await a.sendSecure(
+        LiveRequestFrame(sid: sid, audio: const [kLiveAudioAdpcm]),
+      );
+      expect((await b.expectSecure<LiveRequestFrame>()).audio, [
+        kLiveAudioAdpcm,
+      ]);
+      await b.sendSecure(LiveAcceptFrame(sid: sid, audio: kLiveAudioAdpcm));
+      expect((await a.expectSecure<LiveAcceptFrame>()).audio, kLiveAudioAdpcm);
+
+      // A sound packet of the largest size goes through in one frame, in
+      // order with the others.
+      final data = 'A' * (kMaxLiveAudioDataLength - 4);
+      for (var n = 1; n <= 3; n++) {
+        await b.sendSecure(LiveAudioFrame(sid: sid, n: n, data: data));
+      }
+      for (var n = 1; n <= 3; n++) {
+        final packet = await a.expectSecure<LiveAudioFrame>();
+        expect((packet.n, packet.data.length), (n, data.length));
+      }
+      await b.sendSecure(LiveMuteFrame(sid: sid, muted: true));
+      expect((await a.expectSecure<LiveMuteFrame>()).muted, isTrue);
+      await c.expectSilence();
+    });
+
     test('an unencrypted conversation frame is refused', () async {
       final a = await (await client()).register(idA);
       final b = await (await client()).register(idB);

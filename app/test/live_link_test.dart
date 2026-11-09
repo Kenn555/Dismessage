@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:dismessage/services/chat_session.dart';
+import 'package:dismessage/services/live_audio.dart';
 import 'package:dismessage/services/live_camera.dart';
 import 'package:dismessage/services/live_link.dart';
 import 'package:dismessage/services/live_video.dart';
@@ -16,23 +17,31 @@ const peer = '318343691';
 void main() {
   late List<Frame> sent;
   late FakeLiveCamera camera;
+  late FakeLiveMicrophone microphone;
+  late FakeLiveSpeaker speaker;
   late int now;
   late List<String> notices;
   ChatSession? current;
 
   ChatSession newSession({
     LiveCamera? Function()? createCamera,
+    LiveMicrophone? Function()? createMicrophone,
+    LiveSpeaker? Function()? createSpeaker,
     LiveVideoCodecs? video,
   }) {
     sent = [];
     now = 0;
     notices = [];
     camera = FakeLiveCamera();
+    microphone = FakeLiveMicrophone();
+    speaker = FakeLiveSpeaker();
     final session = current = ChatSession(
       sid: 's1',
       peer: peer,
       send: sent.add,
       createLiveCamera: createCamera ?? () => camera,
+      createLiveMicrophone: createMicrophone ?? () => microphone,
+      createLiveSpeaker: createSpeaker ?? () => speaker,
       // Nothing to display in these tests: only the logic.
       decodeLiveFrame: (_) async => null,
       liveVideo: video ?? const NoLiveVideo(),
@@ -693,6 +702,284 @@ void main() {
     });
   });
 
+  group('sound', () {
+    const askWithSound = LiveRequestFrame(sid: 's1', audio: [kLiveAudioAdpcm]);
+
+    test('the microphone turns on with the camera, then sound leaves', () async {
+      final session = newSession();
+      session.receive(askWithSound);
+      expect(session.live.asksMicrophone, isTrue);
+      expect(microphone.opened, isFalse);
+
+      final running = session.live.acceptRequest();
+      await settle();
+      addTearDown(() async {
+        session.live.stopSharing();
+        await running;
+      });
+      expect(microphone.opened, isTrue);
+      expect(sent.whereType<LiveAcceptFrame>().single.audio, kLiveAudioAdpcm);
+      expect(session.live.sharedAudio, kLiveAudioAdpcm);
+
+      microphone.speak(kLiveAudioPacketMs * 3);
+      final packets = sent.whereType<LiveAudioFrame>().toList();
+      expect(packets.map((p) => p.n), [1, 2, 3]);
+      final samples = ImaAdpcm.decode(base64Decode(packets.first.data))!;
+      expect(samples, hasLength(kLiveAudioPacketSamples));
+    });
+
+    test('nothing is heard before the user agrees', () async {
+      final session = newSession();
+      session.receive(askWithSound);
+      await settle();
+      expect(microphone.opened, isFalse);
+      session.live.declineRequest();
+      expect(microphone.opened, isFalse);
+    });
+
+    test('"Sans le micro" shares the camera alone', () async {
+      final session = newSession();
+      session.receive(askWithSound);
+      final running = session.live.acceptRequest(microphone: false);
+      await settle();
+      addTearDown(() async {
+        session.live.stopSharing();
+        await running;
+      });
+      expect(microphone.opened, isFalse);
+      expect(sent.whereType<LiveAcceptFrame>().single.audio, isNull);
+      expect(session.live.sharedAudio, isNull);
+    });
+
+    test('an older viewer, who cannot play sound, gets none', () async {
+      final session = newSession();
+      session.receive(const LiveRequestFrame(sid: 's1'));
+      expect(session.live.asksMicrophone, isFalse);
+      final running = session.live.acceptRequest();
+      await settle();
+      addTearDown(() async {
+        session.live.stopSharing();
+        await running;
+      });
+      expect(microphone.opened, isFalse);
+      expect(sent.whereType<LiveAcceptFrame>().single.audio, isNull);
+    });
+
+    test('a refused microphone: the camera alone, and the user knows', () async {
+      final session = newSession(
+        createMicrophone: () => FakeLiveMicrophone(
+          failure: const LiveAudioException('Accès au micro refusé.'),
+        ),
+      );
+      session.receive(askWithSound);
+      final running = session.live.acceptRequest();
+      await settle();
+      addTearDown(() async {
+        session.live.stopSharing();
+        await running;
+      });
+      expect(session.live.share, LiveShare.sharing);
+      expect(sent.whereType<LiveAcceptFrame>().single.audio, isNull);
+      expect(notices, ['Accès au micro refusé.']);
+    });
+
+    test('muting stops the sound and tells the viewer', () async {
+      final session = newSession();
+      session.receive(askWithSound);
+      final running = session.live.acceptRequest();
+      await settle();
+      addTearDown(() async {
+        session.live.stopSharing();
+        await running;
+      });
+
+      session.live.setMicMuted(true);
+      expect(session.live.micMuted, isTrue);
+      expect(sent.whereType<LiveMuteFrame>().single.muted, isTrue);
+      microphone.speak(kLiveAudioPacketMs * 3);
+      expect(sent.whereType<LiveAudioFrame>(), isEmpty);
+
+      session.live.setMicMuted(false);
+      expect(sent.whereType<LiveMuteFrame>().last.muted, isFalse);
+      microphone.speak(kLiveAudioPacketMs);
+      expect(sent.whereType<LiveAudioFrame>().single.n, 1);
+    });
+
+    test('the microphone goes off with the camera', () async {
+      for (final stop in <void Function(ChatSession)>[
+        (s) => s.live.stopSharing(),
+        (s) => s.receive(const LiveStopFrame(sid: 's1')),
+        (s) => s.live.onAppHidden(),
+        (s) => s.live.onPeerLeft(),
+      ]) {
+        final session = newSession();
+        session.receive(askWithSound);
+        final running = session.live.acceptRequest();
+        await settle();
+        expect(microphone.opened, isTrue);
+        stop(session);
+        await running;
+        await settle();
+        expect(microphone.closed, isTrue);
+        expect(session.live.sharedAudio, isNull);
+        sent.clear();
+        microphone.speak(kLiveAudioPacketMs * 2);
+        expect(sent.whereType<LiveAudioFrame>(), isEmpty);
+        session.dispose();
+        current = null;
+      }
+    });
+
+    test('stopped while the microphone turns on: it goes off', () async {
+      final slow = Completer<void>();
+      final mic = _SlowMicrophone(slow.future);
+      final session = newSession(createMicrophone: () => mic);
+      session.receive(askWithSound);
+      final running = session.live.acceptRequest();
+      await settle();
+      session.live.stopSharing();
+      slow.complete();
+      await running;
+      await settle();
+      expect(mic.closed, isTrue);
+      expect(sent.whereType<LiveAcceptFrame>(), isEmpty);
+    });
+
+    group('viewer', () {
+      String packet(int ms) => base64Encode(
+        ImaAdpcmEncoder().encode(Int16List(kLiveAudioSampleRate * ms ~/ 1000)),
+      );
+
+      Future<ChatSession> watching({String? audio = kLiveAudioAdpcm}) async {
+        final session = newSession();
+        session.live.request();
+        session.receive(LiveAcceptFrame(sid: 's1', audio: audio));
+        await settle();
+        return session;
+      }
+
+      test('the request says sound can be played', () {
+        final session = newSession();
+        session.live.request();
+        expect(sent.whereType<LiveRequestFrame>().single.audio, [
+          kLiveAudioAdpcm,
+        ]);
+      });
+
+      test('a device that cannot play asks for no sound', () {
+        final session = newSession(createSpeaker: () => null);
+        session.live.request();
+        expect(sent.whereType<LiveRequestFrame>().single.audio, isEmpty);
+      });
+
+      test('the sound plays after a short buffer', () async {
+        final session = await watching();
+        expect(speaker.opened, isTrue);
+        expect(session.live.sound.available, isTrue);
+        const count = kLiveAudioStartMs ~/ kLiveAudioPacketMs;
+        for (var n = 1; n <= count; n++) {
+          if (n < count) {
+            session.receive(
+              LiveAudioFrame(sid: 's1', n: n, data: packet(kLiveAudioPacketMs)),
+            );
+            expect(speaker.played, isEmpty);
+          } else {
+            session.receive(
+              LiveAudioFrame(sid: 's1', n: n, data: packet(kLiveAudioPacketMs)),
+            );
+          }
+          now += kLiveAudioPacketMs;
+        }
+        expect(speaker.played, hasLength(count));
+        // An old packet is dropped.
+        session.receive(
+          LiveAudioFrame(sid: 's1', n: 1, data: packet(kLiveAudioPacketMs)),
+        );
+        expect(speaker.played, hasLength(count));
+      });
+
+      test('no sound agreed: packets are ignored', () async {
+        final session = await watching(audio: null);
+        expect(session.live.sound.available, isFalse);
+        expect(speaker.opened, isFalse);
+        for (var n = 1; n <= 5; n++) {
+          session.receive(
+            LiveAudioFrame(sid: 's1', n: n, data: packet(kLiveAudioPacketMs)),
+          );
+        }
+        expect(speaker.played, isEmpty);
+      });
+
+      test('sound nobody asked for is ignored', () async {
+        final session = newSession();
+        for (var n = 1; n <= 5; n++) {
+          session.receive(
+            LiveAudioFrame(sid: 's1', n: n, data: packet(kLiveAudioPacketMs)),
+          );
+        }
+        expect(speaker.opened, isFalse);
+        expect(speaker.played, isEmpty);
+        expect(session.live.sound.available, isFalse);
+      });
+
+      test('muting on my side plays nothing', () async {
+        final session = await watching();
+        session.live.sound.toggle();
+        for (var n = 1; n <= 5; n++) {
+          session.receive(
+            LiveAudioFrame(sid: 's1', n: n, data: packet(kLiveAudioPacketMs)),
+          );
+          now += kLiveAudioPacketMs;
+        }
+        expect(speaker.played, isEmpty);
+      });
+
+      test('the peer muting is shown, and what was gathered plays', () async {
+        final session = await watching();
+        session.receive(
+          LiveAudioFrame(sid: 's1', n: 1, data: packet(kLiveAudioPacketMs)),
+        );
+        expect(speaker.played, isEmpty);
+        session.receive(const LiveMuteFrame(sid: 's1', muted: true));
+        expect(session.live.sound.peerMuted, isTrue);
+        expect(speaker.played, hasLength(1));
+        session.receive(const LiveMuteFrame(sid: 's1', muted: false));
+        expect(session.live.sound.peerMuted, isFalse);
+      });
+
+      test('a broken packet is ignored', () async {
+        final session = await watching();
+        session.receive(const LiveAudioFrame(sid: 's1', n: 1, data: 'AAAA'));
+        session.receive(const LiveAudioFrame(sid: 's1', n: 2, data: '%%%'));
+        expect(speaker.played, isEmpty);
+      });
+
+      test('the speaker closes with the view, and the sound is reset', () async {
+        final session = await watching();
+        session.live.sound.toggle();
+        session.live.stopWatching();
+        expect(speaker.closed, isTrue);
+        expect(session.live.sound.available, isFalse);
+        expect(session.live.sound.on, isTrue);
+      });
+
+      test('a speaker that cannot open: told, no sound', () async {
+        final session = newSession(
+          createSpeaker: () => FakeLiveSpeaker(
+            failure: const LiveAudioException('Son indisponible.'),
+          ),
+        );
+        session.live.request();
+        session.receive(
+          const LiveAcceptFrame(sid: 's1', audio: kLiveAudioAdpcm),
+        );
+        await settle();
+        expect(session.live.sound.available, isFalse);
+        expect(notices, ['Impossible de jouer le son sur cet appareil.']);
+      });
+    });
+  });
+
   group('what changes tells apart', () {
     test('the peer typing does not touch the timeline', () {
       final session = newSession();
@@ -843,4 +1130,18 @@ void main() {
       expect(sent.whereType<FileCancelFrame>(), hasLength(2));
     });
   });
+}
+
+/// A microphone that takes its time to turn on.
+class _SlowMicrophone implements LiveMicrophone {
+  _SlowMicrophone(this._ready);
+
+  final Future<void> _ready;
+  bool closed = false;
+
+  @override
+  Future<void> open(void Function(Uint8List pcm) onPcm) => _ready;
+
+  @override
+  Future<void> close() async => closed = true;
 }

@@ -12,6 +12,7 @@ import 'services/contacts_service.dart';
 import 'services/desktop_overlay.dart';
 import 'services/identity_service.dart';
 import 'services/legal_consent.dart';
+import 'services/live_audio.dart';
 import 'services/live_camera.dart';
 import 'services/live_fullscreen.dart';
 import 'services/live_video.dart';
@@ -33,6 +34,8 @@ Future<void> main() async {
     serverUri: settings.serverUri,
     acceptsRequestFrom: contacts.allowsRequestFrom,
     createLiveCamera: () => platformLiveCamera(deviceId: devices.cameraId),
+    createLiveMicrophone: () =>
+        platformLiveMicrophone(deviceId: devices.microphoneId),
   );
   // Known before the first camera request: it then leaves at once.
   platformLiveVideo().decoders().ignore();

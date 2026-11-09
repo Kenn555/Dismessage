@@ -236,6 +236,7 @@ class _Sidebar extends StatelessWidget {
           ),
           child: LiveViewCard(
             image: live.image,
+            sound: live.sound,
             onFullscreen: fullscreen == null
                 ? null
                 : () => fullscreen!.toggle(active),

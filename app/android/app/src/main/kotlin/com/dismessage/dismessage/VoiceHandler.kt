@@ -31,6 +31,7 @@ class VoiceHandler(
     private var player: MediaPlayer? = null
     private var playFile: File? = null
     private var pendingPermission: MethodChannel.Result? = null
+    private val live = LiveAudio(context)
 
     /** The screen, when the app is shown: needed to ask for permissions. */
     var activity: Activity? = null
@@ -70,6 +71,28 @@ class VoiceHandler(
                     result.success(null)
                 }
                 "position" -> result.success(player?.currentPosition ?: 0)
+                "micOpen" -> {
+                    if (!granted()) {
+                        result.error("denied", "denied", null)
+                        return
+                    }
+                    live.openMic(call.argument<Int>("rate")!!, call.argument<String>("device"))
+                    result.success(null)
+                }
+                "micRead" -> result.success(live.readMic())
+                "micClose" -> {
+                    live.closeMic()
+                    result.success(null)
+                }
+                "speakerOpen" -> result.success(live.openSpeaker(call.argument<Int>("rate")!!))
+                "speakerPlay" -> {
+                    live.play(call.argument<Int>("id")!!, call.argument<ByteArray>("pcm")!!)
+                    result.success(null)
+                }
+                "speakerClose" -> {
+                    live.closeSpeaker(call.argument<Int>("id")!!)
+                    result.success(null)
+                }
                 else -> result.notImplemented()
             }
         } catch (e: Exception) {
@@ -211,5 +234,6 @@ class VoiceHandler(
     fun release() {
         cancelRecording()
         stopPlayback()
+        live.release()
     }
 }

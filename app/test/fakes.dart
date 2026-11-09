@@ -6,6 +6,7 @@ import 'package:dismessage/services/camera_capture.dart';
 import 'package:dismessage/services/chat_session.dart';
 import 'package:dismessage/services/clipboard_images.dart';
 import 'package:dismessage/services/file_storage.dart';
+import 'package:dismessage/services/live_audio.dart';
 import 'package:dismessage/services/live_camera.dart';
 import 'package:dismessage/services/live_picture.dart';
 import 'package:dismessage/services/live_video.dart';
@@ -266,6 +267,63 @@ class FakeLiveCamera implements LiveCamera {
 
   @override
   Future<void> setCaptureSide(int side) async => captureSides.add(side);
+
+  @override
+  Future<void> close() async => closed = true;
+}
+
+/// Microphone driven by the test: [speak] gives it sound.
+class FakeLiveMicrophone implements LiveMicrophone {
+  FakeLiveMicrophone({this.failure});
+
+  /// Thrown by [open] (none, access refused…).
+  LiveAudioException? failure;
+  bool opened = false;
+  bool closed = false;
+  void Function(Uint8List pcm)? _onPcm;
+
+  @override
+  Future<void> open(void Function(Uint8List pcm) onPcm) async {
+    final failure = this.failure;
+    if (failure != null) throw failure;
+    opened = true;
+    _onPcm = onPcm;
+  }
+
+  /// [ms] of a quiet tone, as the platform would give it.
+  void speak(int ms) {
+    final samples = Int16List(kLiveAudioSampleRate * ms ~/ 1000);
+    for (var i = 0; i < samples.length; i++) {
+      samples[i] = (i % 40 - 20) * 100;
+    }
+    _onPcm?.call(samples.buffer.asUint8List());
+  }
+
+  @override
+  Future<void> close() async {
+    closed = true;
+    _onPcm = null;
+  }
+}
+
+/// Records what it is given to play.
+class FakeLiveSpeaker implements LiveSpeaker {
+  FakeLiveSpeaker({this.failure});
+
+  LiveAudioException? failure;
+  bool opened = false;
+  bool closed = false;
+  final played = <Int16List>[];
+
+  @override
+  Future<void> open() async {
+    final failure = this.failure;
+    if (failure != null) throw failure;
+    opened = true;
+  }
+
+  @override
+  void play(Int16List samples) => played.add(samples);
 
   @override
   Future<void> close() async => closed = true;

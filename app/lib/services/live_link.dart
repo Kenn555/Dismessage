@@ -1,10 +1,12 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:dismessage_protocol/dismessage_protocol.dart';
 import 'package:flutter/foundation.dart';
 
+import 'live_audio.dart';
 import 'live_camera.dart';
 import 'live_picture.dart';
 import 'live_video.dart';
@@ -62,6 +64,36 @@ class LiveImage extends ValueNotifier<LivePicture?> {
   }
 }
 
+/// The peer's sound in my view of their camera.
+class LiveSound extends ChangeNotifier {
+  bool _available = false;
+  bool _peerMuted = false;
+  bool _on = true;
+
+  /// The peer shares their microphone with their camera.
+  bool get available => _available;
+
+  /// The peer muted their microphone: nothing comes.
+  bool get peerMuted => _peerMuted;
+
+  /// Whether I listen (my own choice, back to yes with each view).
+  bool get on => _on;
+
+  void toggle() {
+    _on = !_on;
+    notifyListeners();
+  }
+
+  void _set({bool? available, bool? peerMuted, bool? on}) {
+    final next = (available ?? _available, peerMuted ?? _peerMuted, on ?? _on);
+    if (next == (_available, _peerMuted, _on)) return;
+    _available = next.$1;
+    _peerMuted = next.$2;
+    _on = next.$3;
+    notifyListeners();
+  }
+}
+
 /// A received video frame waiting to be decoded.
 typedef _Queued = ({
   int n,
@@ -86,11 +118,15 @@ class LiveLink extends ChangeNotifier {
     required this.sid,
     required void Function(RelayedFrame frame) send,
     LiveCamera? Function()? createCamera,
+    LiveMicrophone? Function()? createMicrophone,
+    LiveSpeaker? Function()? createSpeaker,
     LiveImageDecoder? decode,
     LiveVideoCodecs? video,
     int Function()? clock,
   }) : _send = send,
        _createCamera = createCamera ?? platformLiveCamera,
+       _createMicrophone = createMicrophone ?? platformLiveMicrophone,
+       _createSpeaker = createSpeaker ?? platformLiveSpeaker,
        _decode = decode ?? decodeLiveFrame,
        _video = video ?? platformLiveVideo(),
        _clock = clock ?? _stopwatchClock();
@@ -98,6 +134,8 @@ class LiveLink extends ChangeNotifier {
   final String sid;
   final void Function(RelayedFrame frame) _send;
   final LiveCamera? Function() _createCamera;
+  final LiveMicrophone? Function() _createMicrophone;
+  final LiveSpeaker? Function() _createSpeaker;
   final LiveImageDecoder _decode;
   final LiveVideoCodecs _video;
   final int Function() _clock;
@@ -143,6 +181,15 @@ class LiveLink extends ChangeNotifier {
   /// The video codec of the frames shown, null for JPEG.
   String? get codec => _codec;
   LiveVideoDecoder? _decoder;
+
+  /// The peer's sound: what plays it (from my request on), its codec once
+  /// agreed, the playout buffer.
+  final LiveSound sound = LiveSound();
+  LiveSpeaker? _speaker;
+  bool _speakerOpen = false;
+  String? _audioCodec;
+  int _lastAudio = 0;
+  final _jitter = LiveAudioJitter();
   final List<_Queued> _queue = [];
   bool _needKey = true;
   int? _keyAskedAt;
@@ -166,13 +213,16 @@ class LiveLink extends ChangeNotifier {
   /// camera can encode it. At once when they are known already (a
   /// [SynchronousFuture]).
   void _sendRequest() {
+    // Sound only if this device can play it.
+    _speaker ??= _createSpeaker();
+    final audio = _speaker == null ? const <String>[] : [kLiveAudioAdpcm];
     void send(Set<String> codecs) {
       if (_closed || _watch != LiveWatch.requesting) return;
       _offered = [
         for (final codec in codecs)
           if (codec == kLiveCodecH264) codec,
       ];
-      _send(LiveRequestFrame(sid: sid, codecs: _offered));
+      _send(LiveRequestFrame(sid: sid, codecs: _offered, audio: audio));
     }
 
     Future<Set<String>> codecs;
@@ -213,8 +263,55 @@ class LiveLink extends ChangeNotifier {
     _keyAskedAt = null;
     _closeDecoder();
     _dropHeld();
+    _closeSpeaker();
     image.show(null);
     _setWatch(LiveWatch.idle);
+  }
+
+  void _closeSpeaker() {
+    final speaker = _speaker;
+    _speaker = null;
+    _speakerOpen = false;
+    _audioCodec = null;
+    _lastAudio = 0;
+    _jitter.reset();
+    sound._set(available: false, peerMuted: false, on: true);
+    if (speaker != null) unawaited(speaker.close().catchError((_) {}));
+  }
+
+  Future<void> _openSpeaker(LiveSpeaker speaker) async {
+    try {
+      await speaker.open();
+    } catch (_) {
+      if (_speaker == speaker) {
+        _tell('Impossible de jouer le son sur cet appareil.');
+        _audioCodec = null;
+        sound._set(available: false);
+      }
+      return;
+    }
+    if (_speaker != speaker || _closed) {
+      await speaker.close().catchError((_) {});
+      return;
+    }
+    _speakerOpen = true;
+  }
+
+  void _receiveAudio(int n, String data) {
+    if (_audioCodec != kLiveAudioAdpcm || n <= _lastAudio) return;
+    _lastAudio = n;
+    final speaker = _speaker;
+    if (speaker == null || !_speakerOpen || !sound.on) return;
+    final Int16List? samples;
+    try {
+      samples = ImaAdpcm.decode(base64Decode(data));
+    } on FormatException {
+      return;
+    }
+    if (samples == null) return;
+    for (final chunk in _jitter.push(samples, _clock())) {
+      speaker.play(chunk);
+    }
   }
 
   void _closeDecoder() {
@@ -406,6 +503,44 @@ class LiveLink extends ChangeNotifier {
   LiveCamera? _camera;
   LiveFlow? _flow;
 
+  /// My microphone, shared with the camera when the viewer can play it and
+  /// I allow it.
+  LiveMicrophone? _microphone;
+  String? _sharedAudio;
+  List<String> _peerAudio = const [];
+  final _packer = LiveAudioPacker();
+  int _audioSent = 0;
+  bool _micMuted = false;
+
+  /// The viewer can hear my microphone, if I allow it.
+  bool get asksMicrophone => _peerAudio.contains(kLiveAudioAdpcm);
+
+  /// The sound codec my microphone sends in, null when it is not shared.
+  String? get sharedAudio => _sharedAudio;
+
+  /// My microphone is shared but muted: nothing leaves.
+  bool get micMuted => _micMuted;
+
+  /// Mutes my microphone, or unmutes it. The viewer is told.
+  void setMicMuted(bool muted) {
+    if (_closed || _sharedAudio == null || _micMuted == muted) return;
+    _micMuted = muted;
+    _packer.reset();
+    _send(LiveMuteFrame(sid: sid, muted: muted));
+    notifyListeners();
+  }
+
+  void _onPcm(int run, Uint8List pcm) {
+    if (run != _shareRun || _sharedAudio == null || _micMuted || _closed) {
+      return;
+    }
+    for (final packet in _packer.add(pcm)) {
+      _send(
+        LiveAudioFrame(sid: sid, n: ++_audioSent, data: base64Encode(packet)),
+      );
+    }
+  }
+
   /// Video codecs the viewer offered, and the one I send in (null: JPEG).
   List<String> _peerCodecs = const [];
   String? _sharedCodec;
@@ -423,8 +558,9 @@ class LiveLink extends ChangeNotifier {
   /// While sharing: what the network looks like, for `check_windows_camera`.
   LiveFlow? get flow => _flow;
 
-  /// Agrees to the peer's request: the camera turns on.
-  Future<void> acceptRequest() async {
+  /// Agrees to the peer's request: the camera turns on, and the microphone
+  /// too when the viewer can hear it, unless [microphone] is false.
+  Future<void> acceptRequest({bool microphone = true}) async {
     if (_closed || _share != LiveShare.asked) return;
     final run = ++_shareRun;
     _setShare(LiveShare.starting);
@@ -448,13 +584,47 @@ class LiveLink extends ChangeNotifier {
       await camera.close();
       return;
     }
+    final audio = microphone && asksMicrophone
+        ? await _openMicrophone(run)
+        : null;
+    if (run != _shareRun) return;
+    _sharedAudio = audio;
     _sharedCodec = codec;
     final flow = _flow = LiveFlow(video: codec != null);
     // Video affords a larger small view.
     if (codec != null) unawaited(camera.setCaptureSide(flow.smallSide));
     _setShare(LiveShare.sharing);
-    _send(LiveAcceptFrame(sid: sid, codec: codec));
+    _send(LiveAcceptFrame(sid: sid, codec: codec, audio: audio));
     await _shareLoop(run, camera, flow);
+  }
+
+  /// Turns my microphone on for the view: its codec, or null when it cannot
+  /// be (the camera is then shared without sound, and I am told).
+  Future<String?> _openMicrophone(int run) async {
+    final microphone = _microphone = _createMicrophone();
+    if (microphone == null) {
+      _tell('Aucun micro utilisable : la caméra est partagée sans le son.');
+      return null;
+    }
+    try {
+      await microphone.open((pcm) => _onPcm(run, pcm));
+    } catch (e) {
+      if (_microphone == microphone) _microphone = null;
+      if (run == _shareRun) {
+        _tell(
+          e is LiveAudioException
+              ? e.message
+              : 'Micro indisponible : la caméra est partagée sans le son.',
+        );
+      }
+      return null;
+    }
+    if (run != _shareRun) {
+      // Stopped while it was turning on.
+      await _closeMicrophone(microphone);
+      return null;
+    }
+    return kLiveAudioAdpcm;
   }
 
   /// Refuses the peer's request.
@@ -487,10 +657,25 @@ class LiveLink extends ChangeNotifier {
     _flow = null;
     _sharedCodec = null;
     _wantKey = false;
+    final microphone = _microphone;
+    _microphone = null;
+    _sharedAudio = null;
+    _micMuted = false;
+    _packer.reset();
+    _audioSent = 0;
     _wake();
     ownImage.show(null);
     _setShare(LiveShare.idle);
     unawaited(_closeCamera(camera));
+    unawaited(_closeMicrophone(microphone));
+  }
+
+  static Future<void> _closeMicrophone(LiveMicrophone? microphone) async {
+    try {
+      await microphone?.close();
+    } catch (_) {
+      // It is off, or gone.
+    }
   }
 
   static Future<void> _closeCamera(LiveCamera? camera) async {
@@ -615,7 +800,7 @@ class LiveLink extends ChangeNotifier {
   void receive(RelayedFrame frame) {
     if (_closed) return;
     switch (frame) {
-      case LiveRequestFrame(:final codecs):
+      case LiveRequestFrame(:final codecs, :final audio):
         if (_share != LiveShare.idle) return;
         final declined = _declinedAt;
         if (declined != null &&
@@ -624,6 +809,7 @@ class LiveLink extends ChangeNotifier {
           return;
         }
         _peerCodecs = codecs;
+        _peerAudio = audio;
         _setShare(LiveShare.asked);
       case LiveStopFrame():
         // The request is withdrawn, or the view closed.
@@ -632,7 +818,7 @@ class LiveLink extends ChangeNotifier {
         } else if (_share != LiveShare.idle) {
           _turnOff();
         }
-      case LiveAcceptFrame(:final codec):
+      case LiveAcceptFrame(:final codec, :final audio):
         if (_watch != LiveWatch.requesting) return;
         _requestTimer?.cancel();
         _requestTimer = null;
@@ -644,6 +830,12 @@ class LiveLink extends ChangeNotifier {
         }
         _codec = codec;
         _needKey = true;
+        final speaker = _speaker;
+        if (audio == kLiveAudioAdpcm && speaker != null) {
+          _audioCodec = audio;
+          sound._set(available: true);
+          unawaited(_openSpeaker(speaker));
+        }
         _setWatch(LiveWatch.watching);
       case LiveEndFrame(:final reason):
         if (_watch == LiveWatch.idle) return;
@@ -690,6 +882,16 @@ class LiveLink extends ChangeNotifier {
         _pendingJpeg = bytes;
         _pendingAt = sentAt;
         unawaited(_decodePending());
+      case LiveAudioFrame(:final n, :final data):
+        if (_watch == LiveWatch.watching) _receiveAudio(n, data);
+      case LiveMuteFrame(:final muted):
+        if (_watch != LiveWatch.watching || _audioCodec == null) return;
+        sound._set(peerMuted: muted);
+        // What was gathered plays out.
+        final speaker = _speaker;
+        final gathered = _jitter.flush(_clock());
+        if (speaker == null || !_speakerOpen || !sound.on) return;
+        gathered.forEach(speaker.play);
       case LiveAckFrame(:final n):
         final flow = _flow;
         if (flow == null) return;
@@ -727,6 +929,7 @@ class LiveLink extends ChangeNotifier {
     _closed = true;
     _notices.close();
     image.dispose();
+    sound.dispose();
     shown.dispose();
     ownImage.dispose();
     super.dispose();

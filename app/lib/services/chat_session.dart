@@ -7,6 +7,7 @@ import 'package:flutter/foundation.dart';
 
 import 'file_storage.dart';
 import 'image_codec.dart';
+import 'live_audio.dart';
 import 'live_camera.dart';
 import 'live_link.dart';
 import 'live_video.dart';
@@ -198,6 +199,8 @@ class ChatSession extends ChangeNotifier {
     Random? random,
     FileStorage? files,
     LiveCamera? Function()? createLiveCamera,
+    LiveMicrophone? Function()? createLiveMicrophone,
+    LiveSpeaker? Function()? createLiveSpeaker,
     LiveImageDecoder? decodeLiveFrame,
     LiveVideoCodecs? liveVideo,
     int Function()? liveClock,
@@ -209,6 +212,8 @@ class ChatSession extends ChangeNotifier {
       sid: sid,
       send: send,
       createCamera: createLiveCamera,
+      createMicrophone: createLiveMicrophone,
+      createSpeaker: createLiveSpeaker,
       decode: decodeLiveFrame,
       video: liveVideo,
       clock: liveClock,
@@ -570,6 +575,8 @@ class ChatSession extends ChangeNotifier {
           LiveStopFrame() ||
           LiveEndFrame() ||
           LiveVideoFrame() ||
+          LiveAudioFrame() ||
+          LiveMuteFrame() ||
           LiveAckFrame() ||
           LiveKeyFrame() ||
           LiveSizeFrame():

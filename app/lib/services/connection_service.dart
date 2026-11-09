@@ -7,6 +7,7 @@ import 'package:web_socket_channel/web_socket_channel.dart';
 import 'chat_session.dart';
 import 'file_storage.dart';
 import 'identity_service.dart';
+import 'live_audio.dart';
 import 'live_camera.dart';
 import 'live_link.dart';
 import 'live_video.dart';
@@ -93,6 +94,8 @@ class ConnectionService extends ChangeNotifier {
     this.sessionGrace = const Duration(seconds: kSessionGraceSeconds),
     FileStorage? fileStorage,
     LiveCamera? Function()? createLiveCamera,
+    LiveMicrophone? Function()? createLiveMicrophone,
+    LiveSpeaker? Function()? createLiveSpeaker,
     LiveImageDecoder? decodeLiveFrame,
     LiveVideoCodecs? liveVideo,
     bool Function(String from)? acceptsRequestFrom,
@@ -102,6 +105,8 @@ class ConnectionService extends ChangeNotifier {
        _connect = connect ?? WebSocketChannel.connect,
        _fileStorage = fileStorage,
        _createLiveCamera = createLiveCamera,
+       _createLiveMicrophone = createLiveMicrophone,
+       _createLiveSpeaker = createLiveSpeaker,
        _decodeLiveFrame = decodeLiveFrame,
        _liveVideo = liveVideo;
 
@@ -113,6 +118,11 @@ class ConnectionService extends ChangeNotifier {
 
   /// The camera shared in live views (the platform's when null).
   final LiveCamera? Function()? _createLiveCamera;
+
+  /// The microphone shared with the camera, and what plays the peer's sound
+  /// (the platform's when null).
+  final LiveMicrophone? Function()? _createLiveMicrophone;
+  final LiveSpeaker? Function()? _createLiveSpeaker;
   final LiveImageDecoder? _decodeLiveFrame;
 
   /// Video decoders of live views (the platform's when null).
@@ -669,6 +679,8 @@ class ConnectionService extends ChangeNotifier {
       send: (frame) => _sendInSession(sid, frame),
       files: _fileStorage,
       createLiveCamera: _createLiveCamera,
+      createLiveMicrophone: _createLiveMicrophone,
+      createLiveSpeaker: _createLiveSpeaker,
       decodeLiveFrame: _decodeLiveFrame,
       liveVideo: _liveVideo,
     );

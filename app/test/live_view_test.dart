@@ -25,6 +25,8 @@ void main() {
   late ChatSession session;
   late List<Frame> sent;
   late FakeLiveCamera camera;
+  late FakeLiveMicrophone microphone;
+  late FakeLiveSpeaker speaker;
   late LiveFullscreen fullscreen;
   late List<bool> system;
 
@@ -39,12 +41,16 @@ void main() {
     final contacts = ContactsService(store);
     sent = [];
     camera = FakeLiveCamera();
+    microphone = FakeLiveMicrophone();
+    speaker = FakeLiveSpeaker();
     system = [];
     session = ChatSession(
       sid: 's1',
       peer: peer,
       send: sent.add,
       createLiveCamera: () => camera,
+      createLiveMicrophone: () => microphone,
+      createLiveSpeaker: () => speaker,
       decodeLiveFrame: (_) async => null,
       liveVideo: const NoLiveVideo(),
     );
@@ -342,6 +348,90 @@ void main() {
     expect(camera.opened, isFalse);
     expect(sent.single, isA<LiveEndFrame>());
     expect(find.byKey(const Key('live-request-banner')), findsNothing);
+  });
+
+  group('sound', () {
+    const askWithSound = LiveRequestFrame(sid: 's1', audio: [kLiveAudioAdpcm]);
+
+    testWidgets('the question names the microphone; it can be left off', (
+      tester,
+    ) async {
+      await pumpChat(tester);
+      session.receive(askWithSound);
+      await tester.pump();
+      expect(find.textContaining('entendre votre micro'), findsOneWidget);
+
+      await tester.tap(find.byKey(const Key('live-allow-silent')));
+      await tester.pump(const Duration(milliseconds: 100));
+      expect(camera.opened, isTrue);
+      expect(microphone.opened, isFalse);
+      expect(find.byKey(const Key('live-mute')), findsNothing);
+      expect(find.textContaining('vous entend'), findsNothing);
+      await finish(tester);
+    });
+
+    testWidgets('a request without sound asks for the camera only', (
+      tester,
+    ) async {
+      await pumpChat(tester);
+      session.receive(const LiveRequestFrame(sid: 's1'));
+      await tester.pump();
+      expect(find.textContaining('micro'), findsNothing);
+      expect(find.byKey(const Key('live-allow-silent')), findsNothing);
+    });
+
+    testWidgets('shared, the microphone can be muted from the bar', (
+      tester,
+    ) async {
+      await pumpChat(tester);
+      session.receive(askWithSound);
+      await tester.pump();
+      await tester.tap(find.byKey(const Key('live-allow')));
+      await tester.pump(const Duration(milliseconds: 100));
+      expect(microphone.opened, isTrue);
+      expect(find.textContaining('vous entend'), findsOneWidget);
+
+      await tester.tap(find.byKey(const Key('live-mute')));
+      await tester.pump(const Duration(milliseconds: 100));
+      expect(session.live.micMuted, isTrue);
+      expect(sent.whereType<LiveMuteFrame>().single.muted, isTrue);
+      expect(find.textContaining('micro coupé'), findsOneWidget);
+
+      await tester.tap(find.byKey(const Key('live-stop-sharing')));
+      await tester.pump(const Duration(milliseconds: 100));
+      expect(microphone.closed, isTrue);
+      await finish(tester);
+    });
+
+    testWidgets('the view has a sound button, and shows a muted peer', (
+      tester,
+    ) async {
+      await pumpChat(tester);
+      await tester.tap(find.byKey(const Key('live-toggle')));
+      await tester.pump();
+      session.receive(
+        const LiveAcceptFrame(sid: 's1', audio: kLiveAudioAdpcm),
+      );
+      await tester.pump();
+      expect(find.byKey(const Key('live-sound')), findsOneWidget);
+      expect(find.byIcon(Icons.volume_up_rounded), findsOneWidget);
+
+      await tester.tap(find.byKey(const Key('live-sound')));
+      await tester.pump();
+      expect(session.live.sound.on, isFalse);
+      expect(find.byIcon(Icons.volume_off_rounded), findsOneWidget);
+
+      session.receive(const LiveMuteFrame(sid: 's1', muted: true));
+      await tester.pump();
+      expect(find.byKey(const Key('live-peer-muted')), findsOneWidget);
+      expect(find.byKey(const Key('live-sound')), findsNothing);
+    });
+
+    testWidgets('no sound shared: no sound button', (tester) async {
+      await pumpChat(tester);
+      await watch(tester);
+      expect(find.byKey(const Key('live-sound')), findsNothing);
+    });
   });
 
   group('attachments', () {

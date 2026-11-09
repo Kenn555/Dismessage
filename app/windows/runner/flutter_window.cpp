@@ -35,6 +35,8 @@ bool FlutterWindow::OnCreate() {
       flutter_controller_->engine()->messenger(), GetHandle());
   live_camera_ = std::make_unique<LiveCamera>(
       flutter_controller_->engine()->messenger(), GetHandle());
+  live_audio_ =
+      std::make_unique<LiveAudio>(flutter_controller_->engine()->messenger());
   // Textures belong to a plugin registrar: the app's own one.
   live_video_ = std::make_unique<LiveVideo>(
       flutter_controller_->engine()->messenger(),
@@ -62,6 +64,7 @@ void FlutterWindow::OnDestroy() {
   overlay_ = nullptr;
   live_camera_ = nullptr;
   live_video_ = nullptr;
+  live_audio_ = nullptr;
   if (flutter_controller_) {
     flutter_controller_ = nullptr;
   }

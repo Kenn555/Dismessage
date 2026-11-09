@@ -1183,12 +1183,16 @@ class _ChatScreenState extends State<ChatScreen> {
   /// time. Buttons rather than a dialog: Enter, while typing, answers nothing.
   Widget _liveRequestBanner() {
     final name = widget.contacts.label(_session.peer);
+    final microphone = _session.live.asksMicrophone;
     return MaterialBanner(
       key: const Key('live-request-banner'),
       leading: const Icon(Icons.videocam_rounded),
       content: Text(
-        '$name demande à voir votre caméra. Elle reste éteinte si vous '
-        'refusez.',
+        microphone
+            ? '$name demande à voir votre caméra et à entendre votre micro. '
+                  'Ils restent éteints si vous refusez.'
+            : '$name demande à voir votre caméra. Elle reste éteinte si vous '
+                  'refusez.',
       ),
       actions: [
         TextButton(
@@ -1199,6 +1203,15 @@ class _ChatScreenState extends State<ChatScreen> {
           },
           child: const Text('Refuser'),
         ),
+        if (microphone)
+          TextButton(
+            key: const Key('live-allow-silent'),
+            onPressed: () {
+              _session.live.acceptRequest(microphone: false);
+              _refocus();
+            },
+            child: const Text('Sans le micro'),
+          ),
         FilledButton(
           key: const Key('live-allow'),
           onPressed: () {
@@ -1216,6 +1229,7 @@ class _ChatScreenState extends State<ChatScreen> {
     final theme = Theme.of(context);
     final scheme = theme.colorScheme;
     final name = widget.contacts.label(_session.peer);
+    final live = _session.live;
     return Material(
       key: const Key('live-sharing-bar'),
       color: scheme.errorContainer,
@@ -1236,13 +1250,30 @@ class _ChatScreenState extends State<ChatScreen> {
             const SizedBox(width: 10),
             Expanded(
               child: Text(
-                '$name voit votre caméra',
+                switch ((live.sharedAudio != null, live.micMuted)) {
+                  (false, _) => '$name voit votre caméra',
+                  (true, false) => '$name voit votre caméra et vous entend',
+                  (true, true) => '$name voit votre caméra (micro coupé)',
+                },
                 overflow: TextOverflow.ellipsis,
                 style: theme.textTheme.bodyMedium?.copyWith(
                   color: scheme.onErrorContainer,
                 ),
               ),
             ),
+            if (live.sharedAudio != null)
+              IconButton(
+                key: const Key('live-mute'),
+                tooltip: live.micMuted ? 'Rétablir le micro' : 'Couper le micro',
+                color: scheme.onErrorContainer,
+                icon: Icon(
+                  live.micMuted ? Icons.mic_off_rounded : Icons.mic_rounded,
+                ),
+                onPressed: () {
+                  live.setMicMuted(!live.micMuted);
+                  _refocus();
+                },
+              ),
             TextButton(
               key: const Key('live-stop-sharing'),
               onPressed: () {
@@ -1352,6 +1383,7 @@ class _ChatScreenState extends State<ChatScreen> {
 
   Widget _liveView(LiveLink live) => LiveViewCard(
     image: live.image,
+    sound: live.sound,
     onFullscreen: widget.fullscreen == null ? null : _toggleFullscreen,
     onClose: _toggleLive,
   );

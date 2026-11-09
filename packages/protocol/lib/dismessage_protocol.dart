@@ -9,6 +9,7 @@ export 'src/e2e.dart';
 export 'src/entry_id.dart';
 export 'src/file_transfer.dart';
 export 'src/frames.dart';
+export 'src/live_audio.dart';
 export 'src/live_flow.dart';
 export 'src/server_address.dart';
 export 'src/text_diff.dart';

@@ -71,8 +71,18 @@ void main() {
       size: 1234567,
       reply: 'aaaabbbbccccdddd',
     ),
-    const LiveRequestFrame(sid: 'sid1', codecs: [kLiveCodecH264]),
-    const LiveAcceptFrame(sid: 'sid1', codec: kLiveCodecH264),
+    const LiveRequestFrame(
+      sid: 'sid1',
+      codecs: [kLiveCodecH264],
+      audio: [kLiveAudioAdpcm],
+    ),
+    const LiveAcceptFrame(
+      sid: 'sid1',
+      codec: kLiveCodecH264,
+      audio: kLiveAudioAdpcm,
+    ),
+    const LiveAudioFrame(sid: 'sid1', n: 3, data: 'AAAAAA=='),
+    const LiveMuteFrame(sid: 'sid1', muted: true),
     const LiveStopFrame(sid: 'sid1'),
     const LiveEndFrame(sid: 'sid1', reason: LiveEndReason.declined),
     const LiveVideoFrame(
@@ -151,11 +161,15 @@ void main() {
       final request =
           Frame.decode('{"t":"live_request","sid":"s"}') as LiveRequestFrame;
       expect(request.codecs, isEmpty);
+      expect(request.audio, isEmpty);
       expect(request.toJson().containsKey('codecs'), isFalse);
+      expect(request.toJson().containsKey('audio'), isFalse);
       final accept =
           Frame.decode('{"t":"live_accept","sid":"s"}') as LiveAcceptFrame;
       expect(accept.codec, isNull);
+      expect(accept.audio, isNull);
       expect(accept.toJson().containsKey('codec'), isFalse);
+      expect(accept.toJson().containsKey('audio'), isFalse);
       final frame =
           Frame.decode('{"t":"live_frame","sid":"s","n":1,"data":"AA=="}')
               as LiveVideoFrame;
@@ -287,6 +301,12 @@ void main() {
       'live codecs too many':
           '{"t":"live_request","sid":"s","codecs":[${List.filled(kMaxLiveCodecs + 1, '"h264"').join(',')}]}',
       'live codecs entry': '{"t":"live_request","sid":"s","codecs":[1]}',
+      'live audio codecs': '{"t":"live_request","sid":"s","audio":"adpcm"}',
+      'live audio codec': '{"t":"live_accept","sid":"s","audio":"A D"}',
+      'live audio too large':
+          '{"t":"live_audio","sid":"s","n":1,"data":"${'A' * (kMaxLiveAudioDataLength + 1)}"}',
+      'live audio number': '{"t":"live_audio","sid":"s","n":0,"data":"AA=="}',
+      'live mute': '{"t":"live_mute","sid":"s","muted":"oui"}',
       'live key not a boolean':
           '{"t":"live_frame","sid":"s","n":1,"data":"AA==","key":1}',
       'registered sessions not a list':
