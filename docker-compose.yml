@@ -1,0 +1,51 @@
+# Dismessage relay on a VPS (Hostinger, Debian): relay + Caddy (HTTPS).
+#
+#   echo 'DISMESSAGE_ID_KEY=<same key as before, never changed>' > .env
+#   docker compose up -d --build
+#   update: git pull && docker compose up -d --build
+#
+# Ports 80 and 443 must be open (nftables on the VPS). Docker's own network
+# could not reach the internet on this VPS (pub get and Let's Encrypt hung):
+# the build and Caddy use the host network instead.
+
+services:
+  relay:
+    build:
+      context: .
+      network: host
+    restart: always
+    environment:
+      DISMESSAGE_ID_KEY: "${DISMESSAGE_ID_KEY}"
+      DISMESSAGE_IDS: /data/ids.json
+      # No Cloudflare here: the real client IP is the last entry of
+      # X-Forwarded-For, set by Caddy.
+      DISMESSAGE_IP_HEADER: ""
+    volumes:
+      - ./data:/data
+    # Reachable from the VPS only: through Caddy.
+    ports:
+      - "127.0.0.1:8080:8080"
+    # Server log (IPs, IDs): at most 3 × 10 MB, oldest lines dropped. Stated
+    # in the privacy policy (app/lib/legal/legal_texts.dart).
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  caddy:
+    image: caddy:2
+    restart: always
+    network_mode: host
+    # No access log (Caddy's default for reverse-proxy).
+    command: caddy reverse-proxy --from dismessage.nykae.tech --to localhost:8080
+    volumes:
+      - caddy_data:/data
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  caddy_data:

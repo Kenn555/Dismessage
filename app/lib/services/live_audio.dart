@@ -7,6 +7,7 @@ import 'package:record_platform_interface/record_platform_interface.dart';
 import 'live_audio_io.dart'
     if (dart.library.js_interop) 'live_audio_web.dart'
     as platform;
+import 'recorder_pool.dart';
 
 class LiveAudioException implements Exception {
   const LiveAudioException(this.message);
@@ -54,9 +55,9 @@ class PluginLiveMicrophone implements LiveMicrophone {
   PluginLiveMicrophone(this._deviceId);
 
   final String? _deviceId;
-  static int _count = 0;
-  final _id = 'dismessage-live-mic-${_count++}';
-  bool _created = false;
+
+  /// From [RecorderPool]: disposing it could crash the app.
+  String? _id;
   StreamSubscription<Uint8List>? _sound;
 
   RecordPlatform get _platform => RecordPlatform.instance;
@@ -64,16 +65,15 @@ class PluginLiveMicrophone implements LiveMicrophone {
   @override
   Future<void> open(void Function(Uint8List pcm) onPcm) async {
     try {
-      await _platform.create(_id);
-      _created = true;
-      if (!await _platform.hasPermission(_id)) throw _denied;
+      final id = _id = await RecorderPool.take();
+      if (!await _platform.hasPermission(id)) throw _denied;
       final stream = await _platform.startStream(
-        _id,
+        id,
         RecordConfig(
           encoder: AudioEncoder.pcm16bits,
           sampleRate: kLiveAudioSampleRate,
           numChannels: 1,
-          device: await _chosenDevice(),
+          device: await _chosenDevice(id),
           // Browsers: the peer's sound from the speakers is not sent back.
           echoCancel: true,
           noiseSuppress: true,
@@ -96,31 +96,24 @@ class PluginLiveMicrophone implements LiveMicrophone {
   }
 
   /// The microphone chosen in the settings; unplugged since: the default.
-  Future<InputDevice?> _chosenDevice() async {
+  Future<InputDevice?> _chosenDevice(String id) async {
     final wanted = _deviceId;
     if (wanted == null) return null;
-    for (final device in await _platform.listInputDevices(_id)) {
+    for (final device in await _platform.listInputDevices(id)) {
       if (device.id == wanted) return device;
     }
     return null;
   }
 
+  /// The stream first (its sink goes), then the recording; the recorder is
+  /// kept for the next time, never disposed ([RecorderPool]).
   @override
   Future<void> close() async {
     await _sound?.cancel();
     _sound = null;
-    if (!_created) return;
-    _created = false;
-    try {
-      await _platform.cancel(_id);
-    } catch (_) {
-      // Not started.
-    }
-    try {
-      await _platform.dispose(_id);
-    } catch (_) {
-      // Already gone.
-    }
+    final id = _id;
+    _id = null;
+    if (id != null) await RecorderPool.give(id);
   }
 }
 

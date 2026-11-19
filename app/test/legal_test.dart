@@ -46,7 +46,7 @@ void main() {
         for (final s in legalNotice.sections) ...s.paragraphs,
       ].join(' ');
       expect(all, contains(kLegalPublisher));
-      expect(all, contains('Render Services, Inc.'));
+      expect(all, contains('Hostinger International Ltd.'));
       expect(all, contains('GitHub, Inc.'));
     });
   });

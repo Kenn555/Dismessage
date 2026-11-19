@@ -18,7 +18,7 @@ String choose({
 ).toString();
 
 void main() {
-  const prod = 'wss://dismessage.onrender.com/ws';
+  const prod = 'wss://dismessage.nykae.tech/ws';
 
   test('SERVER_URL always wins', () {
     expect(

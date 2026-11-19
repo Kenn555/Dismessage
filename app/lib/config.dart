@@ -4,13 +4,15 @@ import 'package:flutter/foundation.dart';
 import 'services/identity_service.dart';
 
 /// Shown in "À propos"; must match `version` in pubspec.yaml (tested).
-const kAppVersion = '0.5.0';
+const kAppVersion = '0.5.2';
 
 /// Source code, linked from "À propos".
 const kRepositoryUrl = 'https://github.com/Kenn555/Dismessage';
 
-/// Production relay (Render).
-const kProductionServer = 'https://dismessage.onrender.com';
+/// Production relay (Hostinger VPS, behind Caddy). The apps only know this
+/// domain: moving the relay to another machine only changes its DNS record
+/// (keep `DISMESSAGE_ID_KEY` and everyone keeps their ID).
+const kProductionServer = 'https://dismessage.nykae.tech';
 
 /// Default relay URL, overridable with
 /// `--dart-define=SERVER_URL=https://example.com`.

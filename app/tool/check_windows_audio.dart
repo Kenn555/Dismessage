@@ -57,6 +57,31 @@ Future<void> listen(String label, String? device, {int ms = 2000}) async {
   }
 }
 
+/// The microphone turned off while sound is coming, as when a camera view
+/// stops: disposing the recorder then crashed the app (`RecorderPool`).
+/// Reaching the next line is the check.
+Future<void> openAndCloseQuickly() async {
+  const times = 20;
+  var chunks = 0;
+  for (var i = 0; i < times; i++) {
+    final microphone = platformLiveMicrophone()!;
+    try {
+      await microphone.open((_) => chunks++);
+      await Future<void>.delayed(Duration(milliseconds: 60 + 37 * (i % 4)));
+    } catch (_) {
+      // Counted below: no sound at all.
+    }
+    await microphone.close();
+  }
+  // Late chunks may still be queued: they must go nowhere.
+  await Future<void>.delayed(const Duration(milliseconds: 300));
+  check(
+    chunks > 0,
+    'micro allumé puis éteint $times fois en pleine réception, sans planter '
+    '($chunks morceaux)',
+  );
+}
+
 Future<void> playTone() async {
   final speaker = platformLiveSpeaker()!;
   try {
@@ -124,6 +149,7 @@ Future<void> main() async {
       await listen(microphone.label, microphone.id);
     }
     await listen('micro débranché depuis', 'n-existe-plus');
+    await openAndCloseQuickly();
     await playTone();
     await loopback();
   } catch (e) {

@@ -4,6 +4,36 @@ Les nouveautés de chaque version de Dismessage, la plus récente en premier.
 
 ---
 
+## 0.5.2 — 19 novembre 2026
+
+### À lire avant de mettre à jour
+
+- **Dismessage change de serveur** : `dismessage.nykae.tech` remplace `dismessage.onrender.com`, dont la bande passante ne suffisait plus et qui est arrêté. Les versions précédentes ne peuvent plus se connecter : **mettez à jour**.
+- **Vous recevez un nouvel ID** à la première connexion. Donnez-le à vos contacts, et demandez-leur le leur : les contacts enregistrés gardent l'ancien ID, à modifier (ou supprimer puis ajouter à nouveau). C'est la dernière fois : l'application ne connaît plus qu'une adresse, `dismessage.nykae.tech`, qui restera la même même si le serveur change de machine.
+- Si vous aviez choisi `dismessage.onrender.com` à la main avec le bouton **Serveur**, remplacez-le par `dismessage.nykae.tech`.
+
+### Améliorations
+
+- **Fini les coupures de fin de mois.** Le nouveau serveur offre beaucoup plus de bande passante, ce qui compte surtout pour la vue caméra et les fichiers, et ne se met plus en veille : plus d'attente de 30 à 60 secondes à la première connexion après une période calme.
+
+### Sécurité et vie privée
+
+- Le serveur est désormais hébergé par Hostinger, société établie dans l'Union européenne, et non plus par Render, aux États-Unis. Les mentions légales et la politique de confidentialité sont à jour : le journal du serveur (connexions, IDs, jamais de message) est limité à 30 Mo, les lignes les plus anciennes étant effacées au fur et à mesure.
+
+---
+
+## 0.5.1 — 12 novembre 2026
+
+### Nouveautés
+
+- **Windows : les demandes de conversation s'affichent dans le mode superposition.** Avant, une demande reçue pendant ce mode restait invisible (l'application est cachée et les notifications se taisent). Une ligne « 💬 … veut discuter avec vous » apparaît désormais dans le bandeau : **Ctrl+O** accepte, **Ctrl+N** refuse (jamais Entrée, qui sert à écrire). Vous restez dans le bandeau avec la conversation en cours ; Échap ouvre la nouvelle. Si plusieurs demandes attendent, elles passent une par une, après une éventuelle demande de caméra ou des fichiers reçus.
+
+### Corrections
+
+- **Windows : Dismessage se fermait brusquement quand une vue caméra s'arrêtait** (caméra arrêtée, refusée, conversation fermée, appli réduite…). Le micro, qui s'éteint avec la caméra, faisait planter l'application au moment de se fermer. C'est corrigé.
+
+---
+
 ## 0.5.0 — 9 novembre 2026
 
 ### À lire avant de mettre à jour

@@ -17,3 +17,7 @@ Thumbs.db
 
 # Distributable builds
 dist/
+
+# VPS deployment (docker-compose.yml): ID key and ID registry
+.env
+/data/

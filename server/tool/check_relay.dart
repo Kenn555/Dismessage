@@ -1,6 +1,6 @@
 // Smoke test of a running relay, e.g. after a deployment:
 //
-//   cd server && dart run tool/check_relay.dart wss://dismessage.onrender.com/ws
+//   cd server && dart run tool/check_relay.dart wss://dismessage.nykae.tech/ws
 //
 // Two throwaway clients get an ID from the relay, open a conversation,
 // exchange keys and a sealed message; a frame in clear must be refused.
@@ -13,7 +13,7 @@ import 'package:async/async.dart';
 import 'package:dismessage_protocol/dismessage_protocol.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
-const _timeout = Duration(seconds: 90); // Render Free wakes up slowly.
+const _timeout = Duration(seconds: 90); // A sleeping host wakes up slowly.
 
 class _Client {
   _Client(this.name, this.channel)
@@ -48,7 +48,7 @@ class _Client {
 
 Future<void> main(List<String> args) async {
   final uri = Uri.parse(
-    args.isEmpty ? 'wss://dismessage.onrender.com/ws' : args.first,
+    args.isEmpty ? 'wss://dismessage.nykae.tech/ws' : args.first,
   );
   final watch = Stopwatch()..start();
   void ok(String step) => stdout.writeln(

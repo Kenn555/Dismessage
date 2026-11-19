@@ -17,14 +17,12 @@ RUN dart pub get --offline && dart compile exe bin/server.dart -o /src/dismessag
 FROM scratch
 COPY --from=build /runtime/ /
 COPY --from=build /src/dismessage-server /app/server
-# Render's free plan has no persistent disk: ids.json is lost on restart.
-# IDs survive anyway, their secrets being signed with DISMESSAGE_ID_KEY: set
-# it in Render's environment (a random text of 32+ characters, never
+# Run by docker-compose.yml (VPS), which sets DISMESSAGE_IDS (on disk) and
+# DISMESSAGE_ID_KEY (from .env: a random text of 32+ characters, never
 # changed: changing it gives everyone a new ID). Not here, it is a secret.
+# Without a proxy header, the client IP is the last X-Forwarded-For entry,
+# set by Caddy.
 ENV DISMESSAGE_IDS=/tmp/ids.json
-# Real client IP (per-IP limits): set by Cloudflare in front of Render,
-# unlike X-Forwarded-For, which a client can pre-fill.
-ENV DISMESSAGE_IP_HEADER=cf-connecting-ip
 # The web client is served by GitHub Pages, not by this container.
 ENV DISMESSAGE_WEB=/nonexistent
 EXPOSE 8080

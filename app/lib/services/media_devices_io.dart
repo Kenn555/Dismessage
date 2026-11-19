@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 import 'package:record_platform_interface/record_platform_interface.dart';
 
 import 'media_devices.dart';
+import 'recorder_pool.dart';
 
 MediaDeviceLister createMediaDeviceLister() => _NativeMediaDevices();
 
@@ -40,10 +41,10 @@ class _NativeMediaDevices implements MediaDeviceLister {
   Future<List<MediaDevice>> microphones() async {
     if (Platform.isAndroid) return _list(_voice, 'listInputs');
     // Windows: the recorder plugin, through a recorder of its own.
-    const id = 'dismessage-device-list';
     final record = RecordPlatform.instance;
+    String? id;
     try {
-      await record.create(id);
+      id = await RecorderPool.take();
       final devices = await record.listInputDevices(id);
       return [
         for (final device in devices)
@@ -52,11 +53,8 @@ class _NativeMediaDevices implements MediaDeviceLister {
     } catch (_) {
       return const [];
     } finally {
-      try {
-        await record.dispose(id);
-      } catch (_) {
-        // Never created.
-      }
+      // Never disposed: see RecorderPool.
+      if (id != null) await RecorderPool.give(id);
     }
   }
 }

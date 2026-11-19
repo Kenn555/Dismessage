@@ -235,6 +235,15 @@ class ConnectionService extends ChangeNotifier {
   /// ID we are waiting an answer from, if any.
   String? get pendingRequest => _pendingRequest;
 
+  /// Conversation requests waiting for my answer, oldest first (the overlay
+  /// panel shows them: the home dialog is hidden behind it).
+  List<String> get incomingRequests => List.unmodifiable(_incoming);
+  final List<String> _incoming = [];
+
+  void _forgetIncoming(String from) {
+    if (_incoming.remove(from) && !_disposed) notifyListeners();
+  }
+
   /// Whether [id] is connected to the relay; null while unknown (not
   /// watched, or we are offline ourselves).
   bool? isOnline(String id) => _presence[id];
@@ -292,11 +301,13 @@ class ConnectionService extends ChangeNotifier {
 
   void accept(String from) {
     _send(ConnectAcceptFrame(from: from));
+    _forgetIncoming(from);
     _events.add(IncomingRequestAnsweredEvent(from));
   }
 
   void reject(String from) {
     _send(ConnectRejectFrame(peer: from));
+    _forgetIncoming(from);
     _events.add(IncomingRequestAnsweredEvent(from));
   }
 
@@ -605,6 +616,10 @@ class ConnectionService extends ChangeNotifier {
         _requestId();
       case IncomingRequestFrame(:final from):
         if (_acceptsRequestFrom?.call(from) ?? true) {
+          if (!_incoming.contains(from)) {
+            _incoming.add(from);
+            notifyListeners();
+          }
           _events.add(IncomingRequestEvent(from));
         }
       case SessionStartedFrame(:final sid, :final peer):
@@ -617,6 +632,7 @@ class ConnectionService extends ChangeNotifier {
         _clearRequest(peer);
         _events.add(RequestRejectedEvent(peer));
       case ConnectCancelFrame(:final peer):
+        _forgetIncoming(peer);
         _events.add(RequestCancelledEvent(peer));
       case PeerLeftFrame(:final sid):
         // After the frames still being opened.

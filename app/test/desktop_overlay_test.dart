@@ -600,6 +600,82 @@ void main() {
       expect(find.byKey(const Key('overlay-offer')), findsNothing);
       await cleanUp(tester);
     });
+
+    final request = find.byKey(const Key('overlay-chat-request'));
+
+    testWidgets('a conversation request shows in the panel, Ctrl+O accepts', (
+      tester,
+    ) async {
+      await pumpApp(tester);
+      await openPanel(tester);
+      channel.receive(const IncomingRequestFrame(from: bob));
+      await tester.pump();
+      await tester.pump();
+      expect(request, findsOneWidget);
+      expect(
+        find.textContaining('555 666 777 veut discuter avec vous'),
+        findsOneWidget,
+      );
+      expect(find.textContaining('Ctrl+O : accepter'), findsOneWidget);
+
+      // Enter, while typing, is no answer.
+      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      await tester.pump();
+      expect(connection.incomingRequests, [bob]);
+
+      await ctrl(tester, LogicalKeyboardKey.keyO);
+      expect(channel.sink.sent.whereType<ConnectAcceptFrame>().single.from, bob);
+      expect(connection.incomingRequests, isEmpty);
+      expect(request, findsNothing);
+      expect(find.byKey(const Key('overlay-notice')), findsOneWidget);
+      // Still in the panel, with the same conversation.
+      expect(overlay.session?.peer, alice);
+      await tester.pump(const Duration(seconds: 6));
+      await cleanUp(tester);
+    });
+
+    testWidgets('Ctrl+N refuses; a withdrawn request disappears', (
+      tester,
+    ) async {
+      await pumpApp(tester);
+      await openPanel(tester);
+      channel.receive(const IncomingRequestFrame(from: bob));
+      channel.receive(const IncomingRequestFrame(from: alice));
+      await tester.pump();
+      await tester.pump();
+      expect(find.textContaining('(+1)'), findsOneWidget);
+
+      await ctrl(tester, LogicalKeyboardKey.keyN);
+      expect(channel.sink.sent.whereType<ConnectRejectFrame>().single.peer, bob);
+      expect(find.textContaining('Alice veut discuter avec vous'), findsOneWidget);
+
+      channel.receive(const ConnectCancelFrame(peer: alice));
+      await tester.pump();
+      await tester.pump();
+      expect(request, findsNothing);
+      expect(connection.incomingRequests, isEmpty);
+      await cleanUp(tester);
+    });
+
+    testWidgets('the camera question is answered before a request', (
+      tester,
+    ) async {
+      await pumpApp(tester);
+      await openPanel(tester);
+      await channel.receiveSecure(const LiveRequestFrame(sid: 's1'));
+      channel.receive(const IncomingRequestFrame(from: bob));
+      await tester.pump();
+      await tester.pump();
+      expect(request, findsOneWidget);
+      // The keys show on the first question only.
+      expect(find.textContaining('Ctrl+O'), findsOneWidget);
+
+      await ctrl(tester, LogicalKeyboardKey.keyN);
+      expect(connection.sessions.single.live.share, LiveShare.idle);
+      expect(connection.incomingRequests, [bob]);
+      expect(find.textContaining('Ctrl+O : accepter'), findsOneWidget);
+      await cleanUp(tester);
+    });
   });
 
   group('the camera in the panel', () {

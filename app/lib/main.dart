@@ -143,6 +143,7 @@ class DismessageApp extends StatelessWidget {
           key: ValueKey('fullscreen-${session.sid}'),
           session: session,
           contacts: contacts,
+          connection: connection,
           inFullscreen: true,
           onExit: fullscreen.exit,
           onFullscreen: fullscreen.exit,

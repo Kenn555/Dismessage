@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import 'package:record_platform_interface/record_platform_interface.dart';
 
 import 'chat_session.dart';
+import 'recorder_pool.dart';
 import 'voice_file.dart';
 
 class VoiceRecorderException implements Exception {
@@ -121,10 +122,11 @@ class PluginVoiceRecorder implements VoiceRecorder {
   PluginVoiceRecorder({this.microphone});
 
   final String? Function()? microphone;
-  static int _count = 0;
-  final _id = 'dismessage-recorder-${_count++}';
   final _clock = Stopwatch();
-  bool _created = false;
+
+  /// From [RecorderPool]: disposing it could crash the app.
+  String? _recorder;
+  String get _id => _recorder!;
   (AudioEncoder, String, String, int)? _format;
 
   RecordPlatform get _platform => RecordPlatform.instance;
@@ -135,10 +137,7 @@ class PluginVoiceRecorder implements VoiceRecorder {
 
   @override
   Future<void> start() async {
-    if (!_created) {
-      await _platform.create(_id);
-      _created = true;
-    }
+    _recorder ??= await RecorderPool.take();
     if (!await _platform.hasPermission(_id)) throw _permissionDenied;
     final format = await _pickFormat();
     if (format == null) {
@@ -193,6 +192,7 @@ class PluginVoiceRecorder implements VoiceRecorder {
   @override
   Future<RecordedVoice?> stop() async {
     _clock.stop();
+    if (_recorder == null) return null;
     final path = await _platform.stop(_id);
     final format = _format;
     if (path == null || format == null) return null;
@@ -209,12 +209,15 @@ class PluginVoiceRecorder implements VoiceRecorder {
   @override
   Future<void> cancel() async {
     _clock.stop();
-    await _platform.cancel(_id);
+    if (_recorder != null) await _platform.cancel(_id);
   }
 
+  /// The recorder goes back to [RecorderPool], never disposed.
   @override
   Future<void> dispose() async {
-    if (_created) await _platform.dispose(_id);
+    final recorder = _recorder;
+    _recorder = null;
+    if (recorder != null) await RecorderPool.give(recorder);
   }
 
   static String? _cleanMime(String? mime) {

@@ -17,7 +17,7 @@ const kLegalContact = 'kennkerenbezara@gmail.com';
 const kMinimumAge = 18;
 
 /// Last change of these texts, shown in them.
-const kLegalUpdated = '9 novembre 2026';
+const kLegalUpdated = '19 novembre 2026';
 
 /// Accepted at first launch; a new value asks users to accept again.
 const kTermsVersion = '2026-10-08';
@@ -44,9 +44,9 @@ class LegalDocument {
   final List<LegalSection> sections;
 }
 
-const _render =
-    'Render Services, Inc., 525 Brannan Street, Suite 300, San Francisco, '
-    'CA 94107, États-Unis. Téléphone : +1 415 319 8186. Site : render.com.';
+const _hostinger =
+    'Hostinger International Ltd., 61 Lordou Vironos Street, 6023 Larnaca, '
+    'Chypre. Site : hostinger.com.';
 
 const _github =
     'GitHub, Inc., 88 Colin P. Kelly Jr. Street, San Francisco, CA 94107, '
@@ -70,7 +70,7 @@ const legalNotice = LegalDocument(
           'sont tenus à la disposition de l’hébergeur ci-dessous.',
     ]),
     LegalSection('Hébergement', [
-      'Serveur de messagerie (relais) : $_render',
+      'Serveur de messagerie (relais) : $_hostinger',
       'Version web et code source : $_github',
     ]),
     LegalSection('Signaler un contenu ou un abus', [
@@ -124,7 +124,7 @@ const privacyPolicy = LegalDocument(
           'échanges. Il traite :',
       '- votre ID et une empreinte (hachage SHA-256) de son secret, pour '
           'empêcher qu’un autre ne s’en serve ; cette empreinte est effacée '
-          'quand vous changez d’ID ou au redémarrage du serveur ;',
+          'quand vous changez d’ID ;',
       '- votre adresse IP, pour la connexion et pour limiter les abus (nombre '
           'de connexions et de demandes par adresse), en mémoire seulement ;',
       '- les IDs que vous contactez, ceux qui vous contactent, et les IDs de '
@@ -146,8 +146,9 @@ const privacyPolicy = LegalDocument(
           'connexions et déconnexions (adresse IP, ID), demandes et mises en '
           'relation (IDs concernés), limites atteintes. Il ne contient jamais '
           'de message ni de secret.',
-      'Ce journal est conservé par l’hébergeur Render pendant 7 jours sur '
-          'l’offre actuellement utilisée, puis effacé.',
+      'Ce journal est conservé sur le serveur dans la limite de 30 Mo : les '
+          'lignes les plus anciennes sont effacées au fur et à mesure, et le '
+          'journal entier à chaque mise à jour du serveur.',
     ]),
     LegalSection('Version web', [
       'La version web est hébergée par GitHub Pages, qui reçoit, comme tout '
@@ -187,11 +188,11 @@ const privacyPolicy = LegalDocument(
     ]),
     LegalSection('Destinataires et transferts hors de l’Union européenne', [
       'Aucune donnée n’est vendue ni partagée à des fins commerciales. Les '
-          'seuls prestataires sont les hébergeurs Render (serveur) et GitHub '
-          '(version web), tous deux établis aux États-Unis. Render adhère au '
-          'cadre de protection des données UE–États-Unis (Data Privacy '
-          'Framework) ; les transferts reposent sur ce cadre ou sur les '
-          'garanties proposées par ces prestataires.',
+          'seuls prestataires sont les hébergeurs Hostinger (serveur, société '
+          'établie dans l’Union européenne) et GitHub (version web, établie '
+          'aux États-Unis). Les transferts vers GitHub reposent sur le cadre '
+          'de protection des données UE–États-Unis (Data Privacy Framework) '
+          'ou sur les garanties proposées par ce prestataire.',
     ]),
     LegalSection('Vos droits', [
       'Vous disposez des droits d’accès, de rectification, d’effacement, de '

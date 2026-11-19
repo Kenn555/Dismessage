@@ -10,6 +10,7 @@ import 'package:flutter/services.dart';
 import '../../services/attachments.dart';
 import '../../services/chat_session.dart';
 import '../../services/clipboard_images.dart';
+import '../../services/connection_service.dart';
 import '../../services/contacts_service.dart';
 import '../../services/desktop_overlay.dart';
 import '../../services/image_codec.dart';
@@ -71,6 +72,7 @@ class DesktopOverlayHost extends StatelessWidget {
                     key: ValueKey(session.sid),
                     session: session,
                     contacts: contacts,
+                    connection: overlay.connection,
                     onExit: overlay.exit,
                     onHeight: overlay.resize,
                     onLiveView: overlay.setLiveView,
@@ -217,6 +219,7 @@ class OverlayPanel extends StatefulWidget {
     required this.session,
     required this.contacts,
     required this.onExit,
+    this.connection,
     this.onHeight,
     this.onLiveView,
     this.onFullscreen,
@@ -232,6 +235,10 @@ class OverlayPanel extends StatefulWidget {
   final ChatSession session;
   final ContactsService contacts;
   final VoidCallback onExit;
+
+  /// Its conversation requests show in the panel: the app, with the
+  /// request dialog, is hidden behind it.
+  final ConnectionService? connection;
 
   /// The height the panel needs (logical pixels), when it changes: the
   /// window follows.
@@ -406,12 +413,18 @@ class _OverlayPanelState extends State<OverlayPanel> {
     return KeyEventResult.handled;
   }
 
-  /// Something from the peer waits for my answer.
+  /// Conversation requests waiting for my answer, oldest first.
+  List<String> get _requests =>
+      widget.connection?.incomingRequests ?? const <String>[];
+
+  /// Something waits for my answer: from the peer, or someone asking for a
+  /// conversation.
   bool get _hasQuestion =>
       _session.live.share == LiveShare.asked ||
-      _session.pendingFiles.isNotEmpty;
+      _session.pendingFiles.isNotEmpty ||
+      _requests.isNotEmpty;
 
-  /// The camera question first: it comes before the files.
+  /// The camera question first, then the files, then the oldest request.
   void _answer({required bool accept}) {
     final live = _session.live;
     if (live.share == LiveShare.asked) {
@@ -420,10 +433,21 @@ class _OverlayPanelState extends State<OverlayPanel> {
       } else {
         live.declineRequest();
       }
-    } else if (accept) {
-      _session.acceptAllPending();
-    } else {
-      _session.declineAllPending();
+    } else if (_session.pendingFiles.isNotEmpty) {
+      if (accept) {
+        _session.acceptAllPending();
+      } else {
+        _session.declineAllPending();
+      }
+    } else if (_requests.firstOrNull case final from?) {
+      final connection = widget.connection!;
+      final name = widget.contacts.label(from);
+      if (accept) {
+        connection.accept(from);
+        _showNotice('💬 Conversation avec $name ouverte · Échap : y aller');
+      } else {
+        connection.reject(from);
+      }
     }
   }
 
@@ -513,7 +537,12 @@ class _OverlayPanelState extends State<OverlayPanel> {
     if (!widget.inFullscreen) _checkWindow(MediaQuery.sizeOf(context).height);
     final content = ListenableBuilder(
       // Not rebuilt by the camera's frames: only its surface is.
-      listenable: Listenable.merge([_session, _input, _session.live]),
+      listenable: Listenable.merge([
+        _session,
+        _input,
+        _session.live,
+        ?widget.connection,
+      ]),
       builder: (context, _) {
         final watching =
             _session.live.watch == LiveWatch.watching && !widget.inFullscreen;
@@ -628,6 +657,11 @@ class _OverlayPanelState extends State<OverlayPanel> {
     final name = widget.contacts.label(_session.peer);
     final waiting = _session.pendingFiles;
     final pending = _pending;
+    final requests = _requests;
+    // The keys show on the first question only: that is the one they answer.
+    final requestKeys = live.share == LiveShare.asked || waiting.isNotEmpty
+        ? ''
+        : ' · Ctrl+O : accepter · Ctrl+N : refuser';
     final lines = <(Key, String)>[
       if (live.share == LiveShare.asked)
         (
@@ -641,6 +675,13 @@ class _OverlayPanelState extends State<OverlayPanel> {
           '📥 ${describeAttachments(0, waiting.length)} de $name '
               '(${formatFileSize(waiting.fold(0, (n, f) => n + f.size))})'
               '${live.share == LiveShare.asked ? '' : ' · Ctrl+O : accepter · Ctrl+N : refuser'}',
+        ),
+      if (requests.firstOrNull case final from?)
+        (
+          const Key('overlay-chat-request'),
+          '💬 ${widget.contacts.label(from)} veut discuter avec vous'
+              '${requests.length > 1 ? ' (+${requests.length - 1})' : ''}'
+              '$requestKeys',
         ),
       if (pending != null)
         (
